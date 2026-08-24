@@ -352,7 +352,7 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
 
   <div id="loginView">
     <h1>Admin Login</h1>
-    <p class="sub">Sign in with the admin account (same one as PinkGame, if you reused that project).</p>
+    <p class="sub">Sign in with the admin account.</p>
     <div class="error-box" id="loginError"></div>
     <div class="field">
       <label>Email</label>
@@ -602,7 +602,7 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
   // the webhook in Discord (Integrations → Webhooks → that webhook →
   // "Regenerate") — that instantly kills the old URL and you paste
   // the new one in here.
-  const DISCORD_WEBHOOK_URL = 'DISCORD_WEBHOOK_URL';
+  const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1490486692287873055/FIzrrXMvfkbu1GG59oIA5mraNurdpMUuSaO79r3TRR1Q-ro-u27D3DEthwdDE440V-4s';
 
   async function postToDiscord(content) {
     if (DISCORD_WEBHOOK_URL === 'YOUR_DISCORD_WEBHOOK_URL') return; // not set up yet
