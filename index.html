@@ -48,10 +48,11 @@
   Also includes a RAWG.io game-database image picker for thumbnails
   (needs a one-time free API key — see the comment above RAWG_API_KEY
   further down) and posts Discord notifications on game/status
-  changes (see the comment above DISCORD_WEBHOOK_URL further down).
+  changes via a Cloudflare Worker proxy (see discord-proxy-worker.js
+  and the comment above DISCORD_PROXY_URL further down).
 ============================================================ -->
 
-<title>adm sfc</title>
+<title>SchoolFlashCards5 — Admin</title>
 <link rel="icon" type="image/x-icon" href="logo.png">
 
 <style>
@@ -352,7 +353,7 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
 
   <div id="loginView">
     <h1>Admin Login</h1>
-    <p class="sub">Sign in with the admin account.</p>
+    <p class="sub">Sign in with the admin account (same one as PinkGame, if you reused that project).</p>
     <div class="error-box" id="loginError"></div>
     <div class="field">
       <label>Email</label>
@@ -578,9 +579,9 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
   // Get a free key: sign up at https://rawg.io/apidocs, fill in the
   // short developer-info form, copy the key from your account page.
   // Free tier: 20,000 requests/month, no billing required.
-  const RAWG_API_KEY = '8ca2cd1c42f4442695fd453518576129';
+  const RAWG_API_KEY = 'YOUR_RAWG_API_KEY';
 
-  // ── DISCORD NOTIFICATIONS ─────────────────────────────────────
+  // ── DISCORD NOTIFICATIONS (via Cloudflare Worker proxy) ────────
   // Replaces the old .github/workflows/discord-site-update.yml.
   // That workflow diffed games.html between git commits — but games
   // don't live in that file anymore, and saving a game here never
@@ -589,27 +590,36 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
   // to. This does the equivalent job from the place the change
   // actually happens: right here, right after a save succeeds.
   //
-  // Paste your existing webhook URL below (Discord server settings →
-  // Integrations → Webhooks → copy URL — the same value that was in
-  // your GitHub secret DISCORD_WEBHOOK_URL). You can delete the old
-  // .github/workflows/discord-site-update.yml file; it's inert now.
+  // The real Discord webhook URL does NOT live in this file — a raw
+  // "discord.com/api/webhooks/..." URL is a pattern automated scanners
+  // actively look for in public code, and this file's source is fully
+  // public. Instead, a small Cloudflare Worker (discord-proxy-worker.js)
+  // holds that URL as a server-side secret, and this page calls the
+  // Worker instead of Discord directly. Full setup steps are in the
+  // comment at the top of that Worker file. Short version: deploy the
+  // Worker, set its DISCORD_WEBHOOK_URL and PROXY_TOKEN secrets, then
+  // paste the Worker's URL and that same token into the two constants
+  // below.
   //
-  // SECURITY NOTE: same static-site caveat as the Google API key —
-  // this URL is visible to anyone who views this page's source.
-  // Unlike the Google key, a Discord webhook URL can't be domain-
-  // restricted — anyone with it can post to your channel. Keep this
-  // page's URL unlinked/private, and if it's ever abused, regenerate
-  // the webhook in Discord (Integrations → Webhooks → that webhook →
-  // "Regenerate") — that instantly kills the old URL and you paste
-  // the new one in here.
-  const DISCORD_WEBHOOK_URL = 'https://discord.com/api/webhooks/1490486692287873055/FIzrrXMvfkbu1GG59oIA5mraNurdpMUuSaO79r3TRR1Q-ro-u27D3DEthwdDE440V-4s';
+  // WHAT THIS DOES AND DOESN'T PROTECT AGAINST: the real webhook URL
+  // is now genuinely hidden — it's never in any file you commit. The
+  // token below still lives in public source same as any static-site
+  // secret, so it's a speed bump against casual/automated abuse of the
+  // Worker endpoint, not a real access control. Still a real
+  // improvement: worst case, rotate PROXY_TOKEN in the Worker and it's
+  // dead instantly, without ever touching the real Discord webhook.
+  const DISCORD_PROXY_URL = 'https://sfcworker.schoolflashcardsgh.workers.dev/'; // e.g. https://sfc-discord-proxy.yourname.workers.dev
+  const DISCORD_PROXY_TOKEN = '5XMydA6ujrzHFdRS7bzhFnVNKTq39F3L'; // same value as the Worker's PROXY_TOKEN secret
 
   async function postToDiscord(content) {
-    if (DISCORD_WEBHOOK_URL === 'YOUR_DISCORD_WEBHOOK_URL') return; // not set up yet
+    if (DISCORD_PROXY_URL === 'YOUR_WORKER_URL') return; // not set up yet
     try {
-      await fetch(DISCORD_WEBHOOK_URL, {
+      await fetch(DISCORD_PROXY_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Proxy-Token': DISCORD_PROXY_TOKEN,
+        },
         body: JSON.stringify({ content })
       });
     } catch (err) {
