@@ -314,6 +314,50 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
 
 .empty-note, .loading-note { color: #999; font-size: 14px; text-align: center; padding: 26px 0; }
 
+/* ── STATUS TAB ────────────────────────────────────────── */
+.auto-check-row {
+  display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid #eee;
+}
+.auto-check-row:last-child { border-bottom: none; }
+.auto-check-name { flex: 1; font-weight: bold; font-size: 14px; color: var(--dark); }
+.auto-check-meta { font-size: 12px; color: #999; }
+.mini-status { font-size: 12px; font-weight: bold; padding: 4px 10px; border-radius: 20px; }
+.mini-status.operational { background: rgba(78,205,196,.18); color: #238b83; }
+.mini-status.maintenance { background: rgba(255,230,109,.35); color: #8a6d00; }
+.mini-status.outage { background: rgba(255,107,107,.2); color: #c23b3b; }
+
+.override-row { border: 2px solid #eee; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+.override-row-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.override-name { font-weight: bold; font-size: 14px; color: var(--dark); }
+.override-active-tag {
+  font-size: 11px; font-weight: bold; color: #c23b3b; background: rgba(255,107,107,.15);
+  padding: 3px 9px; border-radius: 12px;
+}
+.override-grid { display: grid; grid-template-columns: 1fr 1fr 1.4fr auto; gap: 8px; align-items: center; }
+.override-grid select, .override-grid input {
+  border: 2px solid #e2e2e2; color: var(--dark); font-family: inherit;
+  font-size: 13px; padding: 7px 9px; border-radius: 6px; outline: none; width: 100%;
+}
+.override-grid select:focus, .override-grid input:focus { border-color: var(--primary); }
+.override-clear-btn {
+  background: white; border: 2px solid #e2e2e2; color: #999; font-family: inherit; font-weight: bold;
+  font-size: 12px; padding: 8px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.override-clear-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+.incident-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid #eee;
+}
+.incident-row:last-child { border-bottom: none; }
+.incident-row-title { font-weight: bold; font-size: 14px; color: var(--dark); }
+.incident-row-date { font-size: 12px; color: #999; margin-bottom: 4px; }
+.incident-row-detail { font-size: 13px; color: #666; }
+
+@media (max-width: 700px) {
+  .override-grid { grid-template-columns: 1fr; }
+}
+
 /* ── WORLD RECORDS TAB ─────────────────────────────────── */
 .wr-add-row { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 10px; align-items: center; }
 .wr-add-row input[type="text"] {
@@ -371,6 +415,7 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
     <div class="tabs">
       <button class="tab-btn active" id="tabGamesBtn" data-tab="games">🎮 Games</button>
       <button class="tab-btn" id="tabWrBtn" data-tab="wr">🏆 World Records</button>
+      <button class="tab-btn" id="tabStatusBtn" data-tab="status">🚦 Status</button>
     </div>
 
     <!-- ============================================================
@@ -536,6 +581,50 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
 
     </div>
 
+    <!-- ============================================================
+      STATUS TAB
+    ============================================================ -->
+    <div class="tab-panel" id="tab-status" style="display:none;">
+
+      <div class="panel">
+        <h2>Automated Checks</h2>
+        <p class="panel-note">Read-only — sfc-worker.js's scheduled job checks these every ~10 minutes on its own. Nothing to do here unless you want to override one below.</p>
+        <div id="autoChecksList"><div class="loading-note">Loading…</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>Manual Overrides</h2>
+        <p class="panel-note">An active override always wins over the automated check, even for the two automated components — useful for announcing planned maintenance before a check would ever catch it. Leave "Until" blank for an override that stays on until you clear it yourself.</p>
+        <div id="overridesList"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Past Incidents</h2>
+        <p class="panel-note">Shown at the bottom of the status page, most recent first. This is separate from the automated history — write these up by hand after something's resolved.</p>
+        <div class="field span-2">
+          <label>Title</label>
+          <input type="text" id="incidentTitle" placeholder="e.g. Full site outage — routine maintenance"/>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Date</label>
+            <input type="text" id="incidentDate" placeholder="YYYY-MM-DD"/>
+          </div>
+        </div>
+        <div class="field span-2">
+          <label>Detail</label>
+          <textarea id="incidentDetail" rows="3" placeholder="What happened and what was done about it."></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="incidentAddBtn">Add Incident</button>
+          <button class="btn-cancel" id="incidentCancelBtn">Cancel Edit</button>
+        </div>
+        <div class="save-msg" id="incidentSaveMsg"></div>
+        <div id="incidentsList" style="margin-top:20px;"></div>
+      </div>
+
+    </div>
+
   </div>
 
 </main>
@@ -568,6 +657,8 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
   const DOC_REF = doc(db, 'site', 'sfc-games');   // the game list
   const STATUS_REF = doc(db, 'site', 'status');   // Markdown banner on the games page
   const WR_REF = doc(db, 'site', 'wr');           // World Records page content
+  const STATUS_CHECKS_REF = doc(db, 'site', 'status-checks'); // written automatically by sfc-worker.js — read-only here
+  const STATUS_PAGE_REF = doc(db, 'site', 'status-page');     // manual overrides + past incidents, written from this tab
 
   // ── RAWG IMAGE SEARCH SETUP ───────────────────────────────────
   // RAWG.io is a free video game database (500k+ games) with real
@@ -608,8 +699,8 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
   // Worker endpoint, not a real access control. Still a real
   // improvement: worst case, rotate PROXY_TOKEN in the Worker and it's
   // dead instantly, without ever touching the real Discord webhook.
-  const DISCORD_PROXY_URL = 'https://sfcworker.schoolflashcardsgh.workers.dev'; // e.g. https://sfc-discord-proxy.yourname.workers.dev
-  const DISCORD_PROXY_TOKEN = '5XMydA6ujrzHFdRS7bzhFnVNKTq39F3L'; // same value as the Worker's PROXY_TOKEN secret
+  const DISCORD_PROXY_URL = 'YOUR_WORKER_URL'; // e.g. https://sfc-discord-proxy.yourname.workers.dev
+  const DISCORD_PROXY_TOKEN = 'YOUR_PROXY_TOKEN'; // same value as the Worker's PROXY_TOKEN secret
 
   async function postToDiscord(content) {
     if (DISCORD_PROXY_URL === 'YOUR_WORKER_URL') return; // not set up yet
@@ -682,6 +773,7 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
       loadGamesList();
       loadStatus();
       loadWrData();
+      loadStatusPage();
     } else {
       loginView.style.display = 'block';
       adminView.style.display = 'none';
@@ -694,6 +786,7 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
     document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     document.getElementById('tab-games').style.display = tab === 'games' ? 'block' : 'none';
     document.getElementById('tab-wr').style.display = tab === 'wr' ? 'block' : 'none';
+    document.getElementById('tab-status').style.display = tab === 'status' ? 'block' : 'none';
   }
   document.querySelectorAll('.tab-btn').forEach(btn =>
     btn.addEventListener('click', () => activateTab(btn.dataset.tab))
@@ -1511,6 +1604,239 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
   });
 
   updatePreview();
+
+  // ── STATUS PAGE TAB ─────────────────────────────────────────
+  // Mirrors sfc-status.html's own COMPONENT_DEFS exactly — if you add
+  // a component here, add the matching entry there too (and vice
+  // versa) or the two pages will disagree about what exists.
+  const COMPONENT_DEFS = [
+    { key: 'gameLibrary',          name: 'Game Library & CDN',    automated: true },
+    { key: 'discordNotifications', name: 'Discord Notifications', automated: true },
+    { key: 'siteSearch',           name: 'Site Search',           automated: false },
+    { key: 'randomGame',           name: 'Random Game Button',    automated: false },
+  ];
+
+  let statusChecks = {};   // read-only, from sfc-worker.js's scheduled job
+  let statusOverrides = {}; // { [componentKey]: { status, until, note } }
+  let statusIncidents = []; // [{ title, date, detail }]
+  let editingIncidentIndex = null;
+
+  async function loadStatusPage() {
+    try {
+      const [checksSnap, pageSnap] = await Promise.all([
+        getDoc(STATUS_CHECKS_REF),
+        getDoc(STATUS_PAGE_REF),
+      ]);
+      statusChecks = checksSnap.exists() ? checksSnap.data() : {};
+      const pageData = pageSnap.exists() ? pageSnap.data() : {};
+      statusOverrides = pageData.overrides || {};
+      statusIncidents = pageData.incidents || [];
+    } catch (err) {
+      console.error(err);
+      document.getElementById('autoChecksList').innerHTML = '<div class="empty-note">Could not load — check Firestore rules and connection.</div>';
+      return;
+    }
+    renderAutoChecks();
+    renderOverrides();
+    renderIncidents();
+  }
+
+  function renderAutoChecks() {
+    const el = document.getElementById('autoChecksList');
+    const automated = COMPONENT_DEFS.filter(d => d.automated);
+    el.innerHTML = automated.map(def => {
+      const check = statusChecks[def.key];
+      const status = check ? check.current : 'unknown';
+      const badgeClass = status === 'operational' ? 'new' : status === 'outage' ? 'hot' : 'fixed';
+      const when = check && check.lastChecked
+        ? new Date(check.lastChecked).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : 'never';
+      const detail = check && check.detail ? escapeHtml(check.detail) : '';
+      return `
+        <div class="game-row">
+          <div class="row-info">
+            <div class="row-name">${escapeHtml(def.name)}</div>
+            <div style="font-size:12px; color:#999;">Last checked: ${when}${detail ? ' — ' + detail : ''}</div>
+          </div>
+          <span class="mini-badge ${badgeClass}">${status.toUpperCase()}</span>
+        </div>`;
+    }).join('');
+  }
+
+  async function saveStatusOverrides() {
+    await setDoc(STATUS_PAGE_REF, { overrides: statusOverrides }, { merge: true });
+  }
+
+  function renderOverrides() {
+    const el = document.getElementById('overridesList');
+    el.innerHTML = COMPONENT_DEFS.map(def => {
+      const ov = statusOverrides[def.key] || {};
+      const status = ov.status || '';
+      const until = ov.until ? toLocalDatetimeInputValue(ov.until) : '';
+      const note = ov.note || '';
+      return `
+        <div class="wr-record-row" data-key="${def.key}">
+          <div class="wr-record-fields" style="grid-template-columns: 1fr 1fr 1fr 1fr;">
+            <div style="font-weight:bold; font-size:14px;">${escapeHtml(def.name)}</div>
+            <select class="ov-status">
+              <option value="" ${status === '' ? 'selected' : ''}>No override</option>
+              <option value="operational" ${status === 'operational' ? 'selected' : ''}>Operational</option>
+              <option value="maintenance" ${status === 'maintenance' ? 'selected' : ''}>Under Maintenance</option>
+              <option value="outage" ${status === 'outage' ? 'selected' : ''}>Down</option>
+            </select>
+            <input type="datetime-local" class="ov-until" value="${until}" title="Auto-clears after this time — leave blank to stay on until you clear it"/>
+            <input type="text" class="ov-note" value="${escapeHtml(note)}" placeholder="Note shown in Active Incident"/>
+          </div>
+        </div>`;
+    }).join('');
+
+    el.querySelectorAll('.wr-record-row').forEach(row => {
+      const key = row.dataset.key;
+      const statusSel = row.querySelector('.ov-status');
+      const untilInput = row.querySelector('.ov-until');
+      const noteInput = row.querySelector('.ov-note');
+      async function save() {
+        const status = statusSel.value;
+        if (!status) {
+          delete statusOverrides[key];
+        } else {
+          statusOverrides[key] = {
+            status,
+            until: untilInput.value ? new Date(untilInput.value).getTime() : null,
+            note: noteInput.value.trim(),
+          };
+        }
+        try {
+          await saveStatusOverrides();
+        } catch (err) {
+          console.error(err);
+          alert('Could not save — check your Firestore rules and connection.');
+        }
+      }
+      statusSel.addEventListener('change', save);
+      untilInput.addEventListener('change', save);
+      noteInput.addEventListener('change', save);
+    });
+  }
+
+  function toLocalDatetimeInputValue(epochMs) {
+    const d = new Date(epochMs);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  async function saveStatusIncidents() {
+    await setDoc(STATUS_PAGE_REF, { incidents: statusIncidents }, { merge: true });
+  }
+
+  function renderIncidents() {
+    const el = document.getElementById('incidentsList');
+    if (statusIncidents.length === 0) {
+      el.innerHTML = '<div class="empty-note">No past incidents yet.</div>';
+      return;
+    }
+    const sorted = statusIncidents.map((inc, i) => ({ inc, i })).sort((a, b) => (b.inc.date || '').localeCompare(a.inc.date || ''));
+    el.innerHTML = sorted.map(({ inc, i }) => `
+      <div class="game-row">
+        <div class="row-info">
+          <div class="row-name">${escapeHtml(inc.title)}</div>
+          <div style="font-size:12px; color:#999;">${escapeHtml(inc.date || '')} — ${escapeHtml(inc.detail || '').slice(0, 80)}${(inc.detail || '').length > 80 ? '…' : ''}</div>
+        </div>
+        <div class="row-actions">
+          <button class="btn-edit" data-i="${i}">Edit</button>
+          <button class="btn-delete" data-i="${i}">Delete</button>
+        </div>
+      </div>`).join('');
+
+    el.querySelectorAll('.btn-edit').forEach(btn =>
+      btn.addEventListener('click', () => startEditIncident(Number(btn.dataset.i)))
+    );
+    el.querySelectorAll('.btn-delete').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        const i = Number(btn.dataset.i);
+        if (!confirm(`Delete "${statusIncidents[i].title}"? This can't be undone.`)) return;
+        statusIncidents.splice(i, 1);
+        try {
+          await saveStatusIncidents();
+          if (editingIncidentIndex === i) resetIncidentForm();
+          renderIncidents();
+        } catch (err) {
+          console.error(err);
+          alert('Could not delete — check your Firestore rules and connection.');
+        }
+      })
+    );
+  }
+
+  const incidentTitle = document.getElementById('incidentTitle');
+  const incidentDate = document.getElementById('incidentDate');
+  const incidentDetail = document.getElementById('incidentDetail');
+  const incidentAddBtn = document.getElementById('incidentAddBtn');
+  const incidentCancelBtn = document.getElementById('incidentCancelBtn');
+  const incidentSaveMsg = document.getElementById('incidentSaveMsg');
+
+  function resetIncidentForm() {
+    editingIncidentIndex = null;
+    incidentTitle.value = '';
+    incidentDate.value = '';
+    incidentDetail.value = '';
+    incidentAddBtn.textContent = 'Add Incident';
+    incidentCancelBtn.style.display = 'none';
+    incidentSaveMsg.style.display = 'none';
+  }
+  incidentCancelBtn.addEventListener('click', resetIncidentForm);
+
+  function startEditIncident(i) {
+    const inc = statusIncidents[i];
+    if (!inc) return;
+    editingIncidentIndex = i;
+    incidentTitle.value = inc.title || '';
+    incidentDate.value = inc.date || '';
+    incidentDetail.value = inc.detail || '';
+    incidentAddBtn.textContent = 'Update Incident';
+    incidentCancelBtn.style.display = 'inline-block';
+    incidentSaveMsg.style.display = 'none';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  incidentAddBtn.addEventListener('click', async () => {
+    const title = incidentTitle.value.trim();
+    const date = incidentDate.value.trim();
+    const detail = incidentDetail.value.trim();
+    if (!title || !date) {
+      incidentSaveMsg.textContent = 'Title and Date are required (format: YYYY-MM-DD).';
+      incidentSaveMsg.className = 'save-msg err';
+      incidentSaveMsg.style.display = 'block';
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      incidentSaveMsg.textContent = 'Date must be in YYYY-MM-DD format.';
+      incidentSaveMsg.className = 'save-msg err';
+      incidentSaveMsg.style.display = 'block';
+      return;
+    }
+
+    const entry = { title, date, detail };
+    if (editingIncidentIndex !== null) {
+      statusIncidents[editingIncidentIndex] = entry;
+    } else {
+      statusIncidents.push(entry);
+    }
+
+    try {
+      await saveStatusIncidents();
+      incidentSaveMsg.textContent = editingIncidentIndex !== null ? 'Incident updated.' : 'Incident added.';
+      incidentSaveMsg.className = 'save-msg ok';
+      incidentSaveMsg.style.display = 'block';
+      resetIncidentForm();
+      renderIncidents();
+    } catch (err) {
+      console.error(err);
+      incidentSaveMsg.textContent = 'Could not save — check your Firestore rules and connection.';
+      incidentSaveMsg.className = 'save-msg err';
+      incidentSaveMsg.style.display = 'block';
+    }
+  });
 </script>
 </body>
 </html>
