@@ -699,8 +699,8 @@ main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
   // Worker endpoint, not a real access control. Still a real
   // improvement: worst case, rotate PROXY_TOKEN in the Worker and it's
   // dead instantly, without ever touching the real Discord webhook.
-  const DISCORD_PROXY_URL = 'YOUR_WORKER_URL'; // e.g. https://sfc-discord-proxy.yourname.workers.dev
-  const DISCORD_PROXY_TOKEN = 'YOUR_PROXY_TOKEN'; // same value as the Worker's PROXY_TOKEN secret
+  const DISCORD_PROXY_URL = 'https://sfcworker.schoolflashcardsgh.workers.dev/'; // e.g. https://sfc-discord-proxy.yourname.workers.dev
+  const DISCORD_PROXY_TOKEN = '5XMydA6ujrzHFdRS7bzhFnVNKTq39F3L'; // same value as the Worker's PROXY_TOKEN secret
 
   async function postToDiscord(content) {
     if (DISCORD_PROXY_URL === 'YOUR_WORKER_URL') return; // not set up yet
