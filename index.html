@@ -6,6 +6,2250 @@
 
 <!-- ============================================================
   SCHOOLFLASHCARDS5 — sfc-admin.html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+<!-- ============================================================
+  SCHOOLFLASHCARDS5 — sfc-admin.html
+
+  Admin panel for SchoolFlashCards5. Not linked from the public site
+  on purpose — bookmark this page's URL.
+
+  Reuses the SAME Firebase project as PinkGame's admin panel (same
+  login works here), but its own documents so nothing mixes:
+    site/sfc-games  — the game list
+    site/status     — the Markdown status banner on the games page
+    site/wr         — the World Records page content
+
+  TWO TABS:
+    🎮 Games          — add/edit/delete games (one at a time or in
+                        bulk), reorder them, and set the status banner
+    🏆 World Records  — edit the submission instructions, reorder and
+                        edit records (name / record / unbeatable), and
+                        the cheaters callout
+
+  GAME ORDERING RULES (fixed, not something you configure per game):
+    - Games always display NEW > FIXED > HOT > everything else,
+      no matter what order they're stored in.
+    - The ▲▼⤒ buttons in the games list only reorder within a game's
+      own tier — you can't manually rank a Hot game above a New one,
+      since tier always wins on the public page.
+    - A new game with NO badges is inserted at the TOP of the
+      "everything else" group, not the bottom of the whole list.
+    - Editing an existing game to REMOVE its last badge moves it to
+      that same top-of-untagged spot too, rather than leaving it
+      wherever it happened to be sitting (which — since tagged games
+      originally get added at the end of their tier — used to mean it
+      fell to the very bottom once it lost its badge).
+
+  World Records has the same ▲▼⤒ buttons, but as a plain flat list —
+  there's no tier concept there, so they just reorder the whole list
+  directly. Each record is {name, record, unbeatable} and displays as
+  "Name - Record" (plus " (UNBEATABLE)" if checked), same look as the
+  old hand-typed lines. normalizeRecord() in the script below still
+  understands the old single-string format too, so nothing breaks if
+  Firestore still has data from before this change.
+
+  Also includes a RAWG.io game-database image picker for thumbnails
+  (needs a one-time free API key — see the comment above RAWG_API_KEY
+  further down) and posts Discord notifications on game/status
+  changes via a Cloudflare Worker proxy (see discord-proxy-worker.js
+  and the comment above DISCORD_PROXY_URL further down).
+============================================================ -->
+
+<title>SchoolFlashCards5 — Admin</title>
+<link rel="icon" type="image/x-icon" href="logo.png">
+
+<style>
+:root {
+  --primary: #4ECDC4;
+  --accent: #FFE66D;
+  --dark: #292F36;
+  --light: #F7FFF7;
+  --button: #FF6B6B;
+  --danger: #d64545;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; font-family: "Comic Sans MS", cursive, sans-serif; }
+body { background: var(--light); color: var(--dark); min-height: 100vh; }
+
+header {
+  background: var(--primary);
+  padding: 0 32px; height: 62px;
+  display: flex; align-items: center; gap: 16px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+.logo { font-size: 22px; font-weight: bold; color: white; }
+.logo span { color: var(--accent); }
+.hdr-spacer { margin-left: auto; }
+.btn-logout {
+  background: var(--dark); color: var(--accent); border: none;
+  padding: 8px 16px; border-radius: 6px; font-weight: bold; cursor: pointer;
+  font-family: inherit; transition: all 0.2s; display: none;
+}
+.btn-logout:hover { background: var(--danger); color: white; }
+
+main { max-width: 1050px; margin: 0 auto; padding: 36px 20px 100px; }
+
+/* ── LOGIN ─────────────────────────────────────────────── */
+#loginView {
+  max-width: 380px; margin: 70px auto 0;
+  background: white; border-radius: 12px; padding: 30px;
+  box-shadow: 0 3px 14px rgba(0,0,0,0.1);
+}
+#loginView h1 { font-size: 22px; color: var(--dark); margin-bottom: 6px; }
+#loginView p.sub { color: #777; font-size: 14px; margin-bottom: 20px; }
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 13px; font-weight: bold; color: var(--dark); margin-bottom: 6px; }
+.field input[type="text"], .field input[type="email"], .field input[type="password"], .field input[type="url"] {
+  width: 100%; border: 2px solid #e2e2e2; color: var(--dark);
+  font-family: inherit; font-size: 15px; padding: 9px 12px;
+  border-radius: 8px; outline: none; transition: border-color 0.2s;
+}
+.field textarea {
+  width: 100%; border: 2px solid #e2e2e2; color: var(--dark);
+  font-family: inherit; font-size: 15px; padding: 9px 12px;
+  border-radius: 8px; outline: none; transition: border-color 0.2s;
+  resize: vertical;
+}
+.field textarea:focus { border-color: var(--primary); }
+.field input:focus { border-color: var(--primary); }
+
+.panel-note { color: #888; font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+.panel-note code { background: #f2f2f2; padding: 1px 5px; border-radius: 4px; }
+
+.status-preview {
+  border: 2px dashed #e2e2e2; border-radius: 8px; padding: 14px;
+  color: red; font-weight: bold; min-height: 24px;
+}
+.status-preview a { color: red; }
+.status-preview p { margin: 6px 0; }
+.status-preview p:first-child { margin-top: 0; }
+.status-preview p:last-child { margin-bottom: 0; }
+
+.btn-primary {
+  background: var(--button); border: none; color: white;
+  font-family: inherit; font-weight: bold; font-size: 15px;
+  padding: 11px 20px; border-radius: 8px; cursor: pointer; width: 100%;
+  transition: background 0.2s;
+}
+.btn-primary:hover { background: #e85555; }
+
+.error-box {
+  background: #ffe3e3; border: 1px solid #ffb3b3; color: #a11;
+  font-size: 13px; font-weight: bold; padding: 9px 12px;
+  border-radius: 8px; margin-bottom: 14px; display: none;
+}
+
+/* ── TABS ──────────────────────────────────────────────── */
+#adminView { display: none; }
+.tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+.tab-btn {
+  background: white; border: 2px solid #e2e2e2; color: #888;
+  font-family: inherit; font-weight: bold; font-size: 15px;
+  padding: 10px 22px; border-radius: 10px; cursor: pointer; transition: all 0.15s;
+}
+.tab-btn.active { background: var(--dark); border-color: var(--dark); color: var(--accent); }
+.tab-btn:hover:not(.active) { border-color: var(--primary); color: var(--dark); }
+
+/* ── PANELS ────────────────────────────────────────────── */
+.panel {
+  background: white; border-radius: 12px; padding: 26px;
+  margin-bottom: 26px; box-shadow: 0 3px 14px rgba(0,0,0,0.07);
+}
+.panel h2 { font-size: 18px; color: var(--dark); margin-bottom: 18px; }
+
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 18px; }
+.form-grid .span-2 { grid-column: 1 / -1; }
+
+.checkbox-row { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; padding-top: 4px; }
+.checkbox-row label { display: flex; align-items: center; gap: 7px; font-size: 14px; font-weight: bold; color: var(--dark); cursor: pointer; }
+.checkbox-row input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--button); cursor: pointer; }
+
+.thumb-preview {
+  width: 100%; height: 150px; border-radius: 8px;
+  background: var(--primary); border: 2px solid #e2e2e2;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; color: white; font-weight: bold; font-size: 13px; text-align: center; padding: 10px;
+  background-size: cover; background-position: center;
+}
+
+.input-with-btn { display: flex; gap: 8px; }
+.input-with-btn input { flex: 1; min-width: 0; }
+.picker-toggle-btn {
+  flex-shrink: 0; width: 42px; background: #f2f2f2; border: 2px solid #e2e2e2;
+  border-radius: 8px; font-size: 1.1rem; cursor: pointer; transition: border-color 0.15s;
+}
+.picker-toggle-btn:hover, .picker-toggle-btn.active { border-color: var(--primary); }
+
+.img-search-panel {
+  display: none; margin-top: 8px; background: #f7f7f7;
+  border: 2px solid #e2e2e2; border-radius: 8px; padding: 10px;
+}
+.img-search-panel.open { display: block; }
+.img-search-bar { display: flex; gap: 8px; margin-bottom: 8px; }
+.img-search-bar input {
+  flex: 1; min-width: 0; border: 2px solid #e2e2e2; color: var(--dark);
+  font-family: inherit; font-size: 14px; padding: 8px 10px; border-radius: 6px; outline: none;
+}
+.img-search-bar input:focus { border-color: var(--primary); }
+.btn-search {
+  flex-shrink: 0; background: var(--button); border: none; color: white;
+  font-family: inherit; font-weight: bold; font-size: 13px;
+  padding: 0 16px; border-radius: 6px; cursor: pointer;
+}
+.img-search-note { color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
+.img-search-results {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+  gap: 6px; max-height: 260px; overflow-y: auto;
+}
+.img-result { aspect-ratio: 1/1; border-radius: 6px; overflow: hidden; cursor: pointer; border: 2px solid transparent; background: white; }
+.img-result:hover { border-color: var(--button); }
+.img-result img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.img-search-status { grid-column: 1 / -1; color: #888; font-size: 13px; text-align: center; padding: 14px 0; }
+
+.form-actions { display: flex; gap: 10px; margin-top: 20px; }
+.form-actions .btn-primary { width: auto; flex: 1; }
+.btn-cancel {
+  background: white; border: 2px solid #e2e2e2; color: #777;
+  font-family: inherit; font-weight: bold; font-size: 14px;
+  padding: 10px 20px; border-radius: 8px; cursor: pointer; display: none;
+}
+.btn-cancel:hover { border-color: var(--danger); color: var(--danger); }
+
+.save-msg { font-size: 13px; font-weight: bold; margin-top: 12px; display: none; }
+.save-msg.ok { color: #1a8a4a; }
+.save-msg.err { color: var(--danger); }
+
+/* ── ADD ONE / ADD MULTIPLE TOGGLE ─────────────────────── */
+.add-mode-toggle { display: flex; gap: 8px; margin-bottom: 20px; }
+.mode-btn {
+  background: #f2f2f2; border: 2px solid #e2e2e2; color: #888;
+  font-family: inherit; font-weight: bold; font-size: 13px;
+  padding: 7px 16px; border-radius: 20px; cursor: pointer; transition: all 0.15s;
+}
+.mode-btn.active { background: var(--primary); border-color: var(--primary); color: white; }
+
+/* ── BULK ADD ──────────────────────────────────────────── */
+.bulk-note { color: #888; font-size: 13px; line-height: 1.5; margin-bottom: 16px; }
+.bulk-row {
+  display: flex; gap: 10px; align-items: flex-start;
+  border: 2px solid #eee; border-radius: 10px; padding: 12px; margin-bottom: 10px;
+}
+.bulk-row-fields { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.bulk-row-fields input {
+  border: 2px solid #e2e2e2; color: var(--dark); font-family: inherit;
+  font-size: 14px; padding: 8px 10px; border-radius: 6px; outline: none;
+}
+.bulk-row-fields input:focus { border-color: var(--primary); }
+.bulk-row-fields input.bulk-name, .bulk-row-fields input.bulk-url, .bulk-row-fields input.bulk-img { grid-column: 1 / -1; }
+.bulk-badges { grid-column: 1 / -1; display: flex; gap: 16px; flex-wrap: wrap; }
+.bulk-badges label { display: flex; align-items: center; gap: 5px; font-size: 13px; font-weight: bold; color: #666; cursor: pointer; }
+.bulk-remove-row {
+  flex-shrink: 0; width: 28px; height: 28px; background: white; border: 2px solid #e2e2e2;
+  color: #999; border-radius: 6px; cursor: pointer; font-weight: bold;
+}
+.bulk-remove-row:hover { border-color: var(--danger); color: var(--danger); }
+.btn-secondary {
+  background: white; border: 2px dashed #ccc; color: #777;
+  font-family: inherit; font-weight: bold; font-size: 14px;
+  padding: 10px 18px; border-radius: 8px; cursor: pointer; width: 100%; margin-bottom: 12px;
+}
+.btn-secondary:hover { border-color: var(--primary); color: var(--dark); }
+
+/* ── BELL TOGGLE ───────────────────────────────────────── */
+.bell-toggle { display: flex; gap: 8px; }
+.bell-btn {
+  background: #f2f2f2; border: 2px solid #e2e2e2; color: #888;
+  font-family: inherit; font-weight: bold; font-size: 14px;
+  padding: 9px 18px; border-radius: 8px; cursor: pointer; transition: all 0.15s;
+}
+.bell-btn.active { background: var(--dark); border-color: var(--dark); color: var(--accent); }
+
+/* ── GAMES LIST ────────────────────────────────────────── */
+.list-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.list-toolbar input {
+  flex: 1; border: 2px solid #e2e2e2; color: var(--dark);
+  font-family: inherit; font-size: 14px; padding: 9px 12px; border-radius: 8px; outline: none;
+}
+.list-toolbar input:focus { border-color: var(--primary); }
+.count-pill { font-size: 13px; color: #888; font-weight: bold; white-space: nowrap; }
+
+.game-row { display: flex; align-items: center; gap: 14px; padding: 10px; border-bottom: 1px solid #eee; }
+.game-row:last-child { border-bottom: none; }
+
+.tier-header {
+  font-size: 12px; font-weight: bold; color: #999; text-transform: uppercase;
+  letter-spacing: 0.5px; padding: 14px 4px 6px;
+}
+.tier-header:first-child { padding-top: 4px; }
+
+.reorder-note {
+  background: #fff7e0; border: 1px solid #ffe6a3; color: #8a6a00;
+  font-size: 12px; font-weight: bold; padding: 8px 12px;
+  border-radius: 8px; margin-bottom: 10px;
+}
+
+.reorder-col { display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
+.btn-reorder {
+  background: white; border: 2px solid #e2e2e2; color: #666;
+  width: 26px; height: 20px; border-radius: 5px; cursor: pointer;
+  font-size: 10px; line-height: 1; transition: all 0.15s;
+}
+.btn-reorder.top-btn { font-size: 9px; }
+.btn-reorder:hover:not(:disabled) { border-color: var(--primary); color: #1a8a80; }
+.btn-reorder:disabled { opacity: 0.25; cursor: not-allowed; }
+
+.row-thumb { width: 70px; height: 44px; border-radius: 6px; overflow: hidden; background: var(--primary); flex-shrink: 0; }
+.row-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.row-info { flex: 1; min-width: 0; }
+.row-name { font-weight: bold; font-size: 15px; color: var(--dark); }
+.row-badges { display: flex; gap: 5px; flex-shrink: 0; flex-wrap: wrap; }
+.mini-badge { font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 10px; color: white; }
+.mini-badge.new { background: #18bf3a; }
+.mini-badge.hot { background: #be0000; }
+.mini-badge.fixed { background: #2bbcff; }
+.row-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.row-actions button {
+  background: white; border: 2px solid #e2e2e2; color: #666;
+  font-family: inherit; font-weight: bold; font-size: 12px;
+  padding: 6px 12px; border-radius: 6px; cursor: pointer; transition: all 0.15s;
+}
+.row-actions .btn-edit:hover { border-color: var(--primary); color: #1a8a80; }
+.row-actions .btn-delete:hover { border-color: var(--danger); color: var(--danger); }
+
+.empty-note, .loading-note { color: #999; font-size: 14px; text-align: center; padding: 26px 0; }
+
+/* ── STATUS TAB ────────────────────────────────────────── */
+.auto-check-row {
+  display: flex; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid #eee;
+}
+.auto-check-row:last-child { border-bottom: none; }
+.auto-check-name { flex: 1; font-weight: bold; font-size: 14px; color: var(--dark); }
+.auto-check-meta { font-size: 12px; color: #999; }
+.mini-status { font-size: 12px; font-weight: bold; padding: 4px 10px; border-radius: 20px; }
+.mini-status.operational { background: rgba(78,205,196,.18); color: #238b83; }
+.mini-status.maintenance { background: rgba(255,230,109,.35); color: #8a6d00; }
+.mini-status.outage { background: rgba(255,107,107,.2); color: #c23b3b; }
+
+.override-row { border: 2px solid #eee; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+.override-row-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.override-name { font-weight: bold; font-size: 14px; color: var(--dark); }
+.override-active-tag {
+  font-size: 11px; font-weight: bold; color: #c23b3b; background: rgba(255,107,107,.15);
+  padding: 3px 9px; border-radius: 12px;
+}
+.override-grid { display: grid; grid-template-columns: 1fr 1fr 1.4fr auto; gap: 8px; align-items: center; }
+.override-grid select, .override-grid input {
+  border: 2px solid #e2e2e2; color: var(--dark); font-family: inherit;
+  font-size: 13px; padding: 7px 9px; border-radius: 6px; outline: none; width: 100%;
+}
+.override-grid select:focus, .override-grid input:focus { border-color: var(--primary); }
+.override-clear-btn {
+  background: white; border: 2px solid #e2e2e2; color: #999; font-family: inherit; font-weight: bold;
+  font-size: 12px; padding: 8px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.override-clear-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+.incident-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid #eee;
+}
+.incident-row:last-child { border-bottom: none; }
+.incident-row-title { font-weight: bold; font-size: 14px; color: var(--dark); }
+.incident-row-date { font-size: 12px; color: #999; margin-bottom: 4px; }
+.incident-row-detail { font-size: 13px; color: #666; }
+
+@media (max-width: 700px) {
+  .override-grid { grid-template-columns: 1fr; }
+}
+
+/* ── WORLD RECORDS TAB ─────────────────────────────────── */
+.wr-add-row { display: grid; grid-template-columns: 1fr 1fr auto auto; gap: 10px; align-items: center; }
+.wr-add-row input[type="text"] {
+  border: 2px solid #e2e2e2; color: var(--dark); font-family: inherit;
+  font-size: 14px; padding: 9px 12px; border-radius: 8px; outline: none;
+}
+.wr-add-row input[type="text"]:focus { border-color: var(--primary); }
+
+.unbeatable-check { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: bold; color: #666; white-space: nowrap; cursor: pointer; }
+.unbeatable-check input { width: 16px; height: 16px; accent-color: var(--button); cursor: pointer; flex-shrink: 0; }
+
+.wr-record-row { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #eee; }
+.wr-record-row:last-child { border-bottom: none; }
+.wr-record-fields { flex: 1; min-width: 0; display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: center; }
+.wr-name-input, .wr-record-input {
+  border: 2px solid #e2e2e2; color: var(--dark); font-family: inherit;
+  font-size: 14px; padding: 8px 10px; border-radius: 6px; outline: none;
+}
+.wr-name-input:focus, .wr-record-input:focus { border-color: var(--primary); }
+
+@media (max-width: 700px) {
+  .wr-add-row { grid-template-columns: 1fr; }
+  .wr-record-fields { grid-template-columns: 1fr; }
+  .wr-record-row { flex-wrap: wrap; }
+}
+
+/* ── GAME URL PREFIX ───────────────────────────────────── */
+.prefix-input-row { display: flex; align-items: center; gap: 8px; }
+.prefix-input-row input { flex: 1; min-width: 0; }
+.prefix-fixed { font-weight: bold; font-size: 15px; color: #888; white-space: nowrap; }
+.prefix-summary { font-size: 13px; line-height: 1.6; color: #666; margin: 6px 0 2px; }
+.prefix-summary .prefix-err { color: var(--danger); font-weight: bold; }
+.prefix-summary .prefix-ex { word-break: break-all; }
+#prefixApplyBtn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ── DARK MODE TOGGLE ──────────────────────────────────── */
+.theme-toggle {
+  width: 38px; height: 38px; padding: 0; border: none; border-radius: 50%;
+  background: var(--dark); color: var(--accent); font-size: 18px; line-height: 1;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  flex-shrink: 0; user-select: none; transition: transform 0.2s, background-color 0.3s;
+}
+.theme-toggle:hover { background: #454545; transform: scale(1.1); }
+.theme-toggle:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+/* ── DARK MODE ─────────────────────────────────────────── */
+html[data-theme="dark"] { color-scheme: dark; }
+html[data-theme="dark"] body { background: #14181d; color: #e8ecef; }
+html[data-theme="dark"] header { background: #000; box-shadow: 0 2px 10px rgba(0,0,0,0.5); }
+html[data-theme="dark"] .theme-toggle { background: #3a3f47; }
+html[data-theme="dark"] .theme-toggle:hover { background: #50565f; }
+html[data-theme="dark"] .btn-logout { background: #3a3f47; }
+html[data-theme="dark"] .btn-logout:hover { background: var(--danger); color: white; }
+html[data-theme="dark"] #loginView { background: #1f252c; box-shadow: 0 3px 14px rgba(0,0,0,0.5); }
+html[data-theme="dark"] #loginView h1, html[data-theme="dark"] .field label, html[data-theme="dark"] .panel h2 { color: #e8ecef; }
+html[data-theme="dark"] #loginView p.sub, html[data-theme="dark"] .panel-note, html[data-theme="dark"] .bulk-note,
+html[data-theme="dark"] .img-search-note, html[data-theme="dark"] .img-search-status, html[data-theme="dark"] .count-pill,
+html[data-theme="dark"] .prefix-fixed { color: #9aa4ad; }
+html[data-theme="dark"] .panel-note code { background: #2a313a; color: #e8ecef; }
+html[data-theme="dark"] .error-box { background: #3a1f1f; border-color: #6b2f2f; color: #ff8f8f; }
+html[data-theme="dark"] .panel { background: #1f252c; box-shadow: 0 3px 14px rgba(0,0,0,0.5); }
+html[data-theme="dark"] .status-preview { border-color: #3a444e; color: #ff8f8f; }
+html[data-theme="dark"] .status-preview a { color: #ff8f8f; }
+html[data-theme="dark"] .checkbox-row label, html[data-theme="dark"] .row-name, html[data-theme="dark"] .auto-check-name,
+html[data-theme="dark"] .override-name, html[data-theme="dark"] .incident-row-title { color: #e8ecef; }
+html[data-theme="dark"] .thumb-preview { border-color: #3a444e; }
+html[data-theme="dark"] .save-msg.ok { color: #5fe0a0; }
+html[data-theme="dark"] .save-msg.err { color: #ff8f8f; }
+html[data-theme="dark"] .prefix-summary { color: #b0b9c1; }
+html[data-theme="dark"] .prefix-summary .prefix-err { color: #ff8f8f; }
+
+/* text boxes, text areas, dropdowns */
+html[data-theme="dark"] .field input[type="text"],
+html[data-theme="dark"] .field input[type="email"],
+html[data-theme="dark"] .field input[type="password"],
+html[data-theme="dark"] .field input[type="url"],
+html[data-theme="dark"] .field textarea,
+html[data-theme="dark"] .img-search-bar input,
+html[data-theme="dark"] .bulk-row-fields input,
+html[data-theme="dark"] .list-toolbar input,
+html[data-theme="dark"] .override-grid select,
+html[data-theme="dark"] .override-grid input,
+html[data-theme="dark"] .wr-add-row input[type="text"],
+html[data-theme="dark"] .wr-name-input,
+html[data-theme="dark"] .wr-record-input {
+  background-color: #14181d; color: #e8ecef; border-color: #3a444e;
+}
+html[data-theme="dark"] .field input[type="text"]:focus,
+html[data-theme="dark"] .field input[type="email"]:focus,
+html[data-theme="dark"] .field input[type="password"]:focus,
+html[data-theme="dark"] .field input[type="url"]:focus,
+html[data-theme="dark"] .field textarea:focus,
+html[data-theme="dark"] .img-search-bar input:focus,
+html[data-theme="dark"] .bulk-row-fields input:focus,
+html[data-theme="dark"] .list-toolbar input:focus,
+html[data-theme="dark"] .override-grid select:focus,
+html[data-theme="dark"] .override-grid input:focus,
+html[data-theme="dark"] .wr-add-row input[type="text"]:focus,
+html[data-theme="dark"] .wr-name-input:focus,
+html[data-theme="dark"] .wr-record-input:focus { border-color: var(--primary); }
+html[data-theme="dark"] .field input[type="text"]::placeholder,
+html[data-theme="dark"] .field input[type="email"]::placeholder,
+html[data-theme="dark"] .field input[type="password"]::placeholder,
+html[data-theme="dark"] .field input[type="url"]::placeholder,
+html[data-theme="dark"] .field textarea::placeholder,
+html[data-theme="dark"] .img-search-bar input::placeholder,
+html[data-theme="dark"] .bulk-row-fields input::placeholder,
+html[data-theme="dark"] .list-toolbar input::placeholder,
+html[data-theme="dark"] .override-grid input::placeholder,
+html[data-theme="dark"] .wr-add-row input[type="text"]::placeholder,
+html[data-theme="dark"] .wr-name-input::placeholder,
+html[data-theme="dark"] .wr-record-input::placeholder { color: #7d8791; }
+
+/* tabs, mode buttons, bell buttons */
+html[data-theme="dark"] .tab-btn { background: #1f252c; border-color: #2e3640; color: #9aa4ad; }
+html[data-theme="dark"] .tab-btn.active { background: #3a3f47; border-color: #3a3f47; color: var(--accent); }
+html[data-theme="dark"] .tab-btn:hover:not(.active) { border-color: var(--primary); color: #e8ecef; }
+html[data-theme="dark"] .mode-btn { background: #2a313a; border-color: #3a444e; color: #9aa4ad; }
+html[data-theme="dark"] .mode-btn.active { background: var(--primary); border-color: var(--primary); color: white; }
+html[data-theme="dark"] .bell-btn { background: #2a313a; border-color: #3a444e; color: #9aa4ad; }
+html[data-theme="dark"] .bell-btn.active { background: #3a3f47; border-color: #3a3f47; color: var(--accent); }
+
+/* image search + add forms */
+html[data-theme="dark"] .picker-toggle-btn { background: #2a313a; border-color: #3a444e; }
+html[data-theme="dark"] .picker-toggle-btn:hover, html[data-theme="dark"] .picker-toggle-btn.active { border-color: var(--primary); }
+html[data-theme="dark"] .img-search-panel { background: #1a1f25; border-color: #3a444e; }
+html[data-theme="dark"] .img-result { background: #1f252c; }
+html[data-theme="dark"] .btn-cancel { background: #1f252c; border-color: #3a444e; color: #b0b9c1; }
+html[data-theme="dark"] .btn-cancel:hover { border-color: var(--danger); color: #ff8f8f; }
+html[data-theme="dark"] .bulk-row { border-color: #2e3640; }
+html[data-theme="dark"] .bulk-badges label, html[data-theme="dark"] .unbeatable-check { color: #b0b9c1; }
+html[data-theme="dark"] .bulk-remove-row { background: #1f252c; border-color: #3a444e; color: #9aa4ad; }
+html[data-theme="dark"] .bulk-remove-row:hover { border-color: var(--danger); color: #ff8f8f; }
+html[data-theme="dark"] .btn-secondary { background: #1f252c; border-color: #4a5560; color: #b0b9c1; }
+html[data-theme="dark"] .btn-secondary:hover { border-color: var(--primary); color: #e8ecef; }
+
+/* games list */
+html[data-theme="dark"] .game-row, html[data-theme="dark"] .auto-check-row, html[data-theme="dark"] .incident-row,
+html[data-theme="dark"] .wr-record-row { border-bottom-color: #2e3640; }
+html[data-theme="dark"] .tier-header { color: #8b96a0; }
+html[data-theme="dark"] .reorder-note { background: #2b2a1c; border-color: #5a4d1a; color: #e0c56a; }
+html[data-theme="dark"] .btn-reorder { background: #1f252c; border-color: #3a444e; color: #b0b9c1; }
+html[data-theme="dark"] .btn-reorder:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+html[data-theme="dark"] .row-actions button { background: #1f252c; border-color: #3a444e; color: #b0b9c1; }
+html[data-theme="dark"] .row-actions .btn-edit:hover { border-color: var(--primary); color: var(--primary); }
+html[data-theme="dark"] .row-actions .btn-delete:hover { border-color: var(--danger); color: #ff8f8f; }
+html[data-theme="dark"] .empty-note, html[data-theme="dark"] .loading-note, html[data-theme="dark"] .auto-check-meta,
+html[data-theme="dark"] .incident-row-date { color: #8b96a0; }
+
+/* status tab */
+html[data-theme="dark"] .mini-status.operational { color: #5fe0d6; }
+html[data-theme="dark"] .mini-status.maintenance { color: #ffe66d; }
+html[data-theme="dark"] .mini-status.outage, html[data-theme="dark"] .override-active-tag { color: #ff8f8f; }
+html[data-theme="dark"] .override-row { border-color: #2e3640; }
+html[data-theme="dark"] .override-clear-btn { background: #1f252c; border-color: #3a444e; color: #9aa4ad; }
+html[data-theme="dark"] .override-clear-btn:hover { border-color: var(--danger); color: #ff8f8f; }
+html[data-theme="dark"] .incident-row-detail { color: #b0b9c1; }
+</style>
+<!-- Dark mode: applies the saved choice before the page paints (no flash) and saves every change -->
+<script>
+(function () {
+  var KEY = 'sfc-theme';        // saved choice; same key as the rest of the site
+  var DEFAULT_THEME = 'light';  // 'light', 'dark', or 'system' (follow the device)
+  var root = document.documentElement;
+  var chosen = null;            // fallback if storage is blocked
+
+  function saved() {
+    try { var v = localStorage.getItem(KEY); return v === 'dark' || v === 'light' ? v : null; }
+    catch (e) { return null; }
+  }
+  function current() {
+    var s = saved() || chosen;
+    if (s) return s;
+    if (DEFAULT_THEME === 'system') return window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    return DEFAULT_THEME === 'dark' ? 'dark' : 'light';
+  }
+  function apply(theme) {
+    root.setAttribute('data-theme', theme);
+    var btns = document.querySelectorAll('.theme-toggle');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].setAttribute('aria-pressed', theme === 'dark');
+      btns[i].textContent = theme === 'dark' ? '\u2600\uFE0F' : '\uD83C\uDF19';
+    }
+  }
+
+  apply(current());
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('.theme-toggle');
+    if (!btn) return;
+    chosen = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(KEY, chosen); } catch (err) {}
+    apply(chosen);
+  });
+  document.addEventListener('DOMContentLoaded', function () { apply(current()); });
+  window.addEventListener('storage', function (e) { if (e.key === KEY || e.key === null) apply(current()); });
+  window.addEventListener('pageshow', function (e) { if (e.persisted) apply(current()); });
+})();
+</script>
+</head>
+<body>
+
+<header>
+  <a class="logo" href="#">School<span>Flash</span>Cards <span style="font-size:13px; opacity:0.85;">ADMIN</span></a>
+  <div class="hdr-spacer"></div>
+  <button type="button" class="theme-toggle" aria-label="Toggle dark mode" aria-pressed="false" title="Toggle dark mode">&#x1F319;</button>
+  <button class="btn-logout" id="logoutBtn">Log Out</button>
+</header>
+
+<main>
+
+  <div id="loginView">
+    <h1>Admin Login</h1>
+    <p class="sub">Sign in with the admin account (same one as PinkGame, if you reused that project).</p>
+    <div class="error-box" id="loginError"></div>
+    <div class="field">
+      <label>Email</label>
+      <input type="email" id="loginEmail" placeholder="you@example.com" autocomplete="username"/>
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" id="loginPassword" placeholder="••••••••" autocomplete="current-password"/>
+    </div>
+    <button class="btn-primary" id="loginBtn">Sign In</button>
+  </div>
+
+  <div id="adminView">
+
+    <div class="tabs">
+      <button class="tab-btn active" id="tabGamesBtn" data-tab="games">🎮 Games</button>
+      <button class="tab-btn" id="tabWrBtn" data-tab="wr">🏆 World Records</button>
+      <button class="tab-btn" id="tabStatusBtn" data-tab="status">🚦 Status</button>
+    </div>
+
+    <!-- ============================================================
+      GAMES TAB
+    ============================================================ -->
+    <div class="tab-panel" id="tab-games">
+
+      <div class="panel">
+        <h2 id="formTitle">Add A Game</h2>
+
+        <div class="add-mode-toggle">
+          <button type="button" class="mode-btn active" id="modeOneBtn">Add One</button>
+          <button type="button" class="mode-btn" id="modeMultiBtn">Add Multiple</button>
+        </div>
+
+        <!-- SINGLE ADD / EDIT FORM -->
+        <div id="singleAddForm">
+          <div class="form-grid">
+            <div class="field span-2">
+              <label>Name *</label>
+              <input type="text" id="fName" placeholder="e.g. BTD4!"/>
+            </div>
+
+            <div class="field span-2">
+              <label>Game URL *</label>
+              <input type="url" id="fUrl" placeholder="https://..."/>
+            </div>
+
+            <div class="field span-2">
+              <label>Thumbnail Image URL *</label>
+              <div class="input-with-btn">
+                <input type="url" id="fImg" placeholder="https://..."/>
+                <button type="button" class="picker-toggle-btn" id="imgSearchToggle" title="Search for an image">🔍</button>
+              </div>
+              <div class="img-search-panel" id="imgSearchPanel">
+                <div class="img-search-bar">
+                  <input type="text" id="imgSearchInput" placeholder="Search images… e.g. tower defense"/>
+                  <button type="button" class="btn-search" id="imgSearchBtn">Search</button>
+                </div>
+                <div class="img-search-note">
+                  Searches RAWG's video game database (needs a one-time free API key — see the
+                  comment above RAWG_API_KEY in the script if results say "not set up yet"). Great
+                  for real/well-known games, thinner on obscure browser-game clones. You can always
+                  paste any direct image URL above instead.
+                </div>
+                <div class="img-search-results" id="imgSearchResults"></div>
+              </div>
+            </div>
+
+            <div class="field span-2">
+              <label>Preview</label>
+              <div class="thumb-preview" id="thumbPreview">No image yet</div>
+            </div>
+
+            <div class="field span-2 checkbox-row">
+              <label><input type="checkbox" id="fNew"/> New! ✨</label>
+              <label><input type="checkbox" id="fPop"/> Hot! 🔥</label>
+              <label><input type="checkbox" id="fFixed"/> Fixed 🔨</label>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button class="btn-primary" id="saveBtn">Add Game</button>
+            <button class="btn-cancel" id="cancelBtn">Cancel Edit</button>
+          </div>
+          <div class="save-msg" id="saveMsg"></div>
+        </div>
+
+        <!-- BULK ADD FORM -->
+        <div id="bulkAddForm" style="display:none;">
+          <p class="bulk-note">Fill in as many rows as you want and submit them together. No image search here — paste direct image URLs, or use "Add One" above if you want the search picker. Empty rows are ignored.</p>
+          <div id="bulkRows"></div>
+          <button type="button" class="btn-secondary" id="bulkAddRowBtn">+ Add Another Game</button>
+          <div class="form-actions">
+            <button class="btn-primary" id="bulkSubmitBtn">Submit All Games</button>
+          </div>
+          <div class="save-msg" id="bulkSaveMsg"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Site Status</h2>
+        <p class="panel-note">This is the banner shown at the top of the games page. Supports Markdown — <code>**bold**</code>, <code>[links](https://...)</code>, lists, etc. Pick 🔔 or 🔕 below and it's automatically added to the start and end for you — no need to type it yourself.</p>
+        <div class="field span-2">
+          <label>Notification Icon</label>
+          <div class="bell-toggle">
+            <button type="button" class="bell-btn active" id="bellOnBtn">🔔 Updates</button>
+            <button type="button" class="bell-btn" id="bellOffBtn">🔕 No Updates</button>
+          </div>
+        </div>
+        <div class="field span-2">
+          <label>Status Message (Markdown)</label>
+          <textarea id="statusInput" rows="4" placeholder="e.g. Update: New games added! Join the [Discord](https://discord.gg/GnVUkcsfMw) for more."></textarea>
+        </div>
+        <div class="field span-2">
+          <label>Preview</label>
+          <div class="status-preview" id="statusPreview">Nothing set yet.</div>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="statusSaveBtn">Save Status</button>
+        </div>
+        <div class="save-msg" id="statusSaveMsg"></div>
+      </div>
+
+      <div class="panel" id="prefixPanel">
+        <h2>Game URL Prefix</h2>
+        <p class="panel-note">Every game link looks like <code>https://[prefix]/gamename</code>. Type the new prefix (just the domain) and it replaces the prefix on <b>all</b> games at once. The game name part of each link stays exactly as it is.</p>
+        <div class="field">
+          <label for="prefixInput">Prefix</label>
+          <div class="prefix-input-row">
+            <span class="prefix-fixed">https://</span>
+            <input type="text" id="prefixInput" placeholder="games.example.com" autocomplete="off" autocapitalize="off" spellcheck="false"/>
+            <span class="prefix-fixed">/gamename</span>
+          </div>
+        </div>
+        <div class="prefix-summary" id="prefixSummary"></div>
+        <div class="form-actions">
+          <button class="btn-primary" id="prefixApplyBtn" disabled>Apply To All Games</button>
+        </div>
+        <div class="save-msg" id="prefixMsg"></div>
+      </div>
+
+      <div class="panel">
+        <h2>All Games</h2>
+        <div class="list-toolbar">
+          <input type="text" id="listSearch" placeholder="Filter by name..."/>
+          <span class="count-pill" id="listCount">0 games</span>
+        </div>
+        <div id="gamesList"><div class="loading-note">Loading games…</div></div>
+      </div>
+
+    </div>
+
+    <!-- ============================================================
+      WORLD RECORDS TAB
+    ============================================================ -->
+    <div class="tab-panel" id="tab-wr" style="display:none;">
+
+      <div class="panel">
+        <h2>Submission Instructions</h2>
+        <p class="panel-note">Shown near the top of the World Records page (the "if you want your record on here..." text). Supports Markdown.</p>
+        <div class="field span-2">
+          <textarea id="wrIntroInput" rows="4"></textarea>
+        </div>
+        <div class="field span-2">
+          <label>Preview</label>
+          <div class="status-preview" id="wrIntroPreview">Nothing set yet.</div>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="wrIntroSaveBtn">Save Instructions</button>
+        </div>
+        <div class="save-msg" id="wrIntroSaveMsg"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Records</h2>
+        <p class="panel-note">Each record has a name and the record itself, shown as "Name - Record" (with "(UNBEATABLE)" tacked on if you check that box) — same look as before, just split into fields instead of one line you type by hand.</p>
+        <div class="field span-2">
+          <label>Add a Record</label>
+          <div class="wr-add-row">
+            <input type="text" id="wrNewName" placeholder="Name"/>
+            <input type="text" id="wrNewRecord" placeholder="Record — e.g. 500 in Flappy Bird"/>
+            <label class="unbeatable-check"><input type="checkbox" id="wrNewUnbeatable"/> Unbeatable</label>
+            <button type="button" class="btn-search" id="wrAddRecordBtn">Add</button>
+          </div>
+        </div>
+        <div id="wrRecordsList"><div class="loading-note">Loading records…</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>Cheaters List</h2>
+        <p class="panel-note">Shown at the bottom of the World Records page in red. Leave blank to hide it entirely.</p>
+        <div class="field span-2">
+          <input type="text" id="wrCheatersInput" placeholder="Name One, Name Two"/>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="wrCheatersSaveBtn">Save Cheaters List</button>
+        </div>
+        <div class="save-msg" id="wrCheatersSaveMsg"></div>
+      </div>
+
+    </div>
+
+    <!-- ============================================================
+      STATUS TAB
+    ============================================================ -->
+    <div class="tab-panel" id="tab-status" style="display:none;">
+
+      <div class="panel">
+        <h2>Automated Checks</h2>
+        <p class="panel-note">Read-only — sfc-worker.js's scheduled job checks these every ~10 minutes on its own. Nothing to do here unless you want to override one below.</p>
+        <div id="autoChecksList"><div class="loading-note">Loading…</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>Backdate a Day</h2>
+        <p class="panel-note">For when the automated check missed something — like an incident that got noticed and fixed by hand before the next scheduled check ran, so it never got recorded as down. This directly corrects that day's entry on the public uptime bar. Works for today too.</p>
+        <div class="form-grid">
+          <div class="field">
+            <label>Component</label>
+            <select id="backdateComponent">
+              <option value="gameLibrary">Game Library & CDN</option>
+              <option value="discordNotifications">Discord Notifications</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Date</label>
+            <input type="date" id="backdateDate"/>
+          </div>
+          <div class="field span-2">
+            <label>Status</label>
+            <select id="backdateStatus">
+              <option value="operational">Operational</option>
+              <option value="maintenance">Under Maintenance</option>
+              <option value="outage">Down</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="backdateSaveBtn">Save Correction</button>
+        </div>
+        <div class="save-msg" id="backdateSaveMsg"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Manual Overrides</h2>
+        <p class="panel-note">An active override always wins over the automated check, even for the two automated components — useful for announcing planned maintenance before a check would ever catch it. Leave "Until" blank for an override that stays on until you clear it yourself.</p>
+        <div id="overridesList"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Past Incidents</h2>
+        <p class="panel-note">Shown at the bottom of the status page, most recent first. This is separate from the automated history — write these up by hand after something's resolved.</p>
+        <div class="field span-2">
+          <label>Title</label>
+          <input type="text" id="incidentTitle" placeholder="e.g. Full site outage — routine maintenance"/>
+        </div>
+        <div class="form-grid">
+          <div class="field">
+            <label>Date</label>
+            <input type="text" id="incidentDate" placeholder="YYYY-MM-DD"/>
+          </div>
+        </div>
+        <div class="field span-2">
+          <label>Detail</label>
+          <textarea id="incidentDetail" rows="3" placeholder="What happened and what was done about it."></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn-primary" id="incidentAddBtn">Add Incident</button>
+          <button class="btn-cancel" id="incidentCancelBtn">Cancel Edit</button>
+        </div>
+        <div class="save-msg" id="incidentSaveMsg"></div>
+        <div id="incidentsList" style="margin-top:20px;"></div>
+      </div>
+
+    </div>
+
+  </div>
+
+</main>
+
+<!-- Markdown rendering for the status/intro previews -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.13.0/firebase-app.js';
+  import {
+    getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut
+  } from 'https://www.gstatic.com/firebasejs/12.13.0/firebase-auth.js';
+  import {
+    getFirestore, doc, getDoc, setDoc
+  } from 'https://www.gstatic.com/firebasejs/12.13.0/firebase-firestore.js';
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyC3jxwyH9Pws4nhIT9ScDffk5CpHa99oMM",
+    authDomain: "pinkgame-1d4bf.firebaseapp.com",
+    projectId: "pinkgame-1d4bf",
+    storageBucket: "pinkgame-1d4bf.firebasestorage.app",
+    messagingSenderId: "531941128309",
+    appId: "1:531941128309:web:82e55394c6f48666a3603c",
+    measurementId: "G-WF5YT7S04W"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const DOC_REF = doc(db, 'site', 'sfc-games');   // the game list
+  const STATUS_REF = doc(db, 'site', 'status');   // Markdown banner on the games page
+  const WR_REF = doc(db, 'site', 'wr');           // World Records page content
+  const STATUS_CHECKS_REF = doc(db, 'site', 'status-checks'); // written automatically by sfc-worker.js — read-only here
+  const STATUS_PAGE_REF = doc(db, 'site', 'status-page');     // manual overrides + past incidents, written from this tab
+
+  // ── RAWG IMAGE SEARCH SETUP ───────────────────────────────────
+  // RAWG.io is a free video game database (500k+ games) with real
+  // cover art/screenshots — a much better fit for game thumbnails
+  // than a general image search, and it's free with no credit card.
+  // (Switched from Google Custom Search, which closed to new
+  // customers — see the comment above the search code further down.)
+  //
+  // Get a free key: sign up at https://rawg.io/apidocs, fill in the
+  // short developer-info form, copy the key from your account page.
+  // Free tier: 20,000 requests/month, no billing required.
+  const RAWG_API_KEY = 'YOUR_RAWG_API_KEY';
+
+  // ── DISCORD NOTIFICATIONS (via Cloudflare Worker proxy) ────────
+  // Replaces the old .github/workflows/discord-site-update.yml.
+  // That workflow diffed games.html between git commits — but games
+  // don't live in that file anymore, and saving a game here never
+  // creates a git commit at all (it's a direct Firestore write from
+  // the browser), so a GitHub Actions workflow has nothing to react
+  // to. This does the equivalent job from the place the change
+  // actually happens: right here, right after a save succeeds.
+  //
+  // The real Discord webhook URL does NOT live in this file — a raw
+  // "discord.com/api/webhooks/..." URL is a pattern automated scanners
+  // actively look for in public code, and this file's source is fully
+  // public. Instead, a small Cloudflare Worker (discord-proxy-worker.js)
+  // holds that URL as a server-side secret, and this page calls the
+  // Worker instead of Discord directly. Full setup steps are in the
+  // comment at the top of that Worker file. Short version: deploy the
+  // Worker, set its DISCORD_WEBHOOK_URL and PROXY_TOKEN secrets, then
+  // paste the Worker's URL and that same token into the two constants
+  // below.
+  //
+  // WHAT THIS DOES AND DOESN'T PROTECT AGAINST: the real webhook URL
+  // is now genuinely hidden — it's never in any file you commit. The
+  // token below still lives in public source same as any static-site
+  // secret, so it's a speed bump against casual/automated abuse of the
+  // Worker endpoint, not a real access control. Still a real
+  // improvement: worst case, rotate PROXY_TOKEN in the Worker and it's
+  // dead instantly, without ever touching the real Discord webhook.
+  const DISCORD_PROXY_URL = 'https://sfcworker.schoolflashcardsgh.workers.dev'; // e.g. https://sfc-discord-proxy.yourname.workers.dev
+  const DISCORD_PROXY_TOKEN = '5XMydA6ujrzHFdRS7bzhFnVNKTq39F3L'; // same value as the Worker's PROXY_TOKEN secret
+
+  async function postToDiscord(content) {
+    if (DISCORD_PROXY_URL === 'YOUR_WORKER_URL') return; // not set up yet
+    try {
+      await fetch(DISCORD_PROXY_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Proxy-Token': DISCORD_PROXY_TOKEN,
+        },
+        body: JSON.stringify({ content })
+      });
+    } catch (err) {
+      // A failed notification shouldn't block or roll back the save —
+      // the change already succeeded in Firestore.
+      console.error('Discord notification failed:', err);
+    }
+  }
+
+  function notifyGameChange(lines) {
+    const who = auth.currentUser?.email || 'admin';
+    postToDiscord(
+      `**SchoolFlashCards5 updated**\n` +
+      `**By:** ${who}\n\n` +
+      `**Changes:**\n\`\`\`text\n${lines}\n\`\`\`\n` +
+      `@here`
+    );
+  }
+
+  function notifyStatusChange(wrappedText) {
+    const who = auth.currentUser?.email || 'admin';
+    const body = wrappedText || '_(status cleared)_';
+    postToDiscord(
+      `**SchoolFlashCards5 status updated**\n` +
+      `**By:** ${who}\n\n${body}\n\n@here`
+    );
+  }
+
+  function escapeHtml(str) {
+    return String(str ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  // ── AUTH ──────────────────────────────────────────────────
+  const loginView = document.getElementById('loginView');
+  const adminView = document.getElementById('adminView');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const loginError = document.getElementById('loginError');
+
+  document.getElementById('loginBtn').addEventListener('click', async () => {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    loginError.style.display = 'none';
+    try {
+      await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) {
+      loginError.textContent = 'Sign-in failed — check the email and password and try again.';
+      loginError.style.display = 'block';
+    }
+  });
+
+  logoutBtn.addEventListener('click', () => signOut(auth));
+
+  onAuthStateChanged(auth, (user) => {
+    if (user) {
+      loginView.style.display = 'none';
+      adminView.style.display = 'block';
+      logoutBtn.style.display = 'inline-block';
+      loadGamesList();
+      loadStatus();
+      loadWrData();
+      loadStatusPage();
+    } else {
+      loginView.style.display = 'block';
+      adminView.style.display = 'none';
+      logoutBtn.style.display = 'none';
+    }
+  });
+
+  // ── TABS ──────────────────────────────────────────────────
+  function activateTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.getElementById('tab-games').style.display = tab === 'games' ? 'block' : 'none';
+    document.getElementById('tab-wr').style.display = tab === 'wr' ? 'block' : 'none';
+    document.getElementById('tab-status').style.display = tab === 'status' ? 'block' : 'none';
+  }
+  document.querySelectorAll('.tab-btn').forEach(btn =>
+    btn.addEventListener('click', () => activateTab(btn.dataset.tab))
+  );
+
+  // ── ADD ONE / ADD MULTIPLE MODE ────────────────────────────
+  function activateAddMode(mode) {
+    document.getElementById('modeOneBtn').classList.toggle('active', mode === 'one');
+    document.getElementById('modeMultiBtn').classList.toggle('active', mode === 'multi');
+    document.getElementById('singleAddForm').style.display = mode === 'one' ? 'block' : 'none';
+    document.getElementById('bulkAddForm').style.display = mode === 'multi' ? 'block' : 'none';
+  }
+  document.getElementById('modeOneBtn').addEventListener('click', () => activateAddMode('one'));
+  document.getElementById('modeMultiBtn').addEventListener('click', () => activateAddMode('multi'));
+
+  // ── GAME FORM STATE ─────────────────────────────────────────
+  // All games are stored as ONE array in ONE Firestore document
+  // (site/sfc-games, field "list"). Every add/edit/delete here reads
+  // the whole list into memory, changes it, and writes it all back.
+  let editingId = null;
+  let allGames = [];
+  let listFilter = '';
+
+  function newGameId() {
+    return (crypto.randomUUID ? crypto.randomUUID() : `g_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  }
+
+  async function saveGamesList(updatedList) {
+    await setDoc(DOC_REF, { list: updatedList });
+    allGames = updatedList;
+  }
+
+  function badgeTier(g) {
+    if (g.isNew) return 3;
+    if (g.isFixed) return 2;
+    if (g.isPop) return 1;
+    return 0;
+  }
+  const TIER_LABEL = { 3: '✨ New', 2: '🔨 Fixed', 1: '🔥 Hot', 0: 'Everything Else' };
+
+  // Inserts one or more brand-new games into `list`, preserving their
+  // relative order: untagged ones go together at the TOP of the
+  // untagged group, tagged ones go together at the very end (which —
+  // since tier sort always wins on the public page — puts each at the
+  // end of its own tier group). Shared by single-add, bulk-add, and
+  // the "removed its last badge" repositioning in the edit flow.
+  function insertNewGames(list, newGamesInOrder) {
+    const untagged = newGamesInOrder.filter(g => badgeTier(g) === 0);
+    const tagged = newGamesInOrder.filter(g => badgeTier(g) !== 0);
+    let updated = [...list];
+    if (untagged.length > 0) {
+      const firstUntaggedIdx = updated.findIndex(g => badgeTier(g) === 0);
+      if (firstUntaggedIdx === -1) {
+        updated.push(...untagged);
+      } else {
+        updated.splice(firstUntaggedIdx, 0, ...untagged);
+      }
+    }
+    if (tagged.length > 0) {
+      updated.push(...tagged);
+    }
+    return updated;
+  }
+
+  const fName = document.getElementById('fName');
+  const fUrl = document.getElementById('fUrl');
+  const fImg = document.getElementById('fImg');
+  const fNew = document.getElementById('fNew');
+  const fPop = document.getElementById('fPop');
+  const fFixed = document.getElementById('fFixed');
+  const thumbPreview = document.getElementById('thumbPreview');
+  const formTitle = document.getElementById('formTitle');
+  const saveBtn = document.getElementById('saveBtn');
+  const cancelBtn = document.getElementById('cancelBtn');
+  const saveMsg = document.getElementById('saveMsg');
+
+  function updatePreview() {
+    const url = fImg.value.trim();
+    if (url) {
+      thumbPreview.style.backgroundImage = `url('${url.replace(/'/g, "%27")}')`;
+      thumbPreview.textContent = '';
+    } else {
+      thumbPreview.style.backgroundImage = 'none';
+      thumbPreview.textContent = 'No image yet';
+    }
+  }
+  fImg.addEventListener('input', updatePreview);
+
+  function resetForm() {
+    editingId = null;
+    fName.value = ''; fUrl.value = ''; fImg.value = '';
+    fNew.checked = false; fPop.checked = false; fFixed.checked = false;
+    formTitle.textContent = 'Add A Game';
+    saveBtn.textContent = 'Add Game';
+    cancelBtn.style.display = 'none';
+    saveMsg.style.display = 'none';
+    closeImgSearch();
+    imgSearchInput.value = '';
+    imgSearchResults.innerHTML = '';
+    updatePreview();
+  }
+
+  cancelBtn.addEventListener('click', resetForm);
+
+  saveBtn.addEventListener('click', async () => {
+    const name = fName.value.trim();
+    const url = fUrl.value.trim();
+    const img = fImg.value.trim();
+    if (!name || !url || !img) {
+      saveMsg.textContent = 'Name, Game URL, and Thumbnail Image URL are all required.';
+      saveMsg.className = 'save-msg err';
+      saveMsg.style.display = 'block';
+      return;
+    }
+
+    const gameData = {
+      id: editingId || newGameId(),
+      name, url, img,
+      isNew: fNew.checked,
+      isPop: fPop.checked,
+      isFixed: fFixed.checked,
+    };
+
+    saveBtn.disabled = true;
+    try {
+      let updatedList;
+      const wasEditing = !!editingId;
+      if (editingId) {
+        const oldGame = allGames.find(g => g.id === editingId);
+        const oldTier = oldGame ? badgeTier(oldGame) : 0;
+        const newTier = badgeTier(gameData);
+        if (oldTier > 0 && newTier === 0) {
+          // Lost its last badge -> reposition to the top of the untagged
+          // group instead of leaving it wherever it used to sit.
+          const withoutOld = allGames.filter(g => g.id !== editingId);
+          updatedList = insertNewGames(withoutOld, [gameData]);
+        } else {
+          // Position never changes otherwise — reordering is a separate,
+          // explicit action (the ▲▼⤒ buttons in the list below).
+          updatedList = allGames.map(g => g.id === editingId ? gameData : g);
+        }
+        saveMsg.textContent = 'Game updated.';
+      } else {
+        updatedList = insertNewGames(allGames, [gameData]);
+        saveMsg.textContent = 'Game added.';
+      }
+      await saveGamesList(updatedList);
+      saveMsg.className = 'save-msg ok';
+      saveMsg.style.display = 'block';
+      notifyGameChange(wasEditing
+        ? `A game "${name}" has been updated.`
+        : `A game "${name}" has been added.`);
+      resetForm();
+      renderList();
+    } catch (err) {
+      console.error(err);
+      saveMsg.textContent = 'Could not save — check your Firestore rules and connection.';
+      saveMsg.className = 'save-msg err';
+      saveMsg.style.display = 'block';
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  // ── IMAGE SEARCH (RAWG.io video game database) ─────────────────
+  // Why RAWG instead of a general image search: Google's Custom
+  // Search JSON API closed to new customers (existing customers only,
+  // shutting down entirely Jan 1, 2027 — see developers.google.com's
+  // own notice on that API). Wikimedia Commons is free and open to
+  // anyone, but it's a Creative-Commons image library, not a game
+  // database — it essentially never has cover art for named games.
+  // RAWG is a free, purpose-built video game database (500k+ games)
+  // with real cover art/screenshots, no billing, no card required.
+  //
+  // Setup: sign up at https://rawg.io/apidocs, fill in the short
+  // developer-info form, copy your key from the account page, paste
+  // it into RAWG_API_KEY near the top of this script.
+  //
+  // Coverage: real/commercial/well-known games (Doom, Minecraft,
+  // FNAF, 2048, Flappy Bird, Subway Surfers, BTD4, Crossy Road, Cut
+  // the Rope...) turn up fine. Obscure reskinned browser clones (a
+  // random itch.io "GunSpin" or "GladiHoppers"-style game) often
+  // won't be in RAWG's database at all — paste a direct URL for those.
+  //
+  // ATTRIBUTION: RAWG's terms ask for a visible credit + link back to
+  // RAWG on pages that use their data/images. A small "Game art via
+  // RAWG.io" link has been added to the games page footer for this —
+  // don't remove it if you're using RAWG images live on the site.
+  //
+  // SECURITY NOTE: like any key in a static site, this is visible in
+  // the page source to anyone who looks. Unlike Google's, RAWG's free
+  // tier has no billing attached — worst case if it leaks is hitting
+  // the 20k/month cap, not an unexpected charge.
+  const imgSearchToggle = document.getElementById('imgSearchToggle');
+  const imgSearchPanel = document.getElementById('imgSearchPanel');
+  const imgSearchInput = document.getElementById('imgSearchInput');
+  const imgSearchBtn = document.getElementById('imgSearchBtn');
+  const imgSearchResults = document.getElementById('imgSearchResults');
+
+  function openImgSearch() {
+    imgSearchPanel.classList.add('open');
+    imgSearchToggle.classList.add('active');
+    imgSearchInput.focus();
+  }
+  function closeImgSearch() {
+    imgSearchPanel.classList.remove('open');
+    imgSearchToggle.classList.remove('active');
+  }
+  imgSearchToggle.addEventListener('click', () => {
+    imgSearchPanel.classList.contains('open') ? closeImgSearch() : openImgSearch();
+  });
+  document.addEventListener('click', (e) => {
+    if (!imgSearchPanel.contains(e.target) && e.target !== imgSearchToggle) closeImgSearch();
+  });
+
+  async function runImageSearch() {
+    const term = imgSearchInput.value.trim();
+    if (!term) return;
+
+    if (RAWG_API_KEY === 'YOUR_RAWG_API_KEY') {
+      imgSearchResults.innerHTML = '<div class="img-search-status">Image search isn\'t set up yet — see the comment above RAWG_API_KEY near the top of this file (it\'s a free sign-up, no billing). You can still paste any direct image URL above.</div>';
+      return;
+    }
+
+    imgSearchResults.innerHTML = '<div class="img-search-status">Searching…</div>';
+    try {
+      const url = 'https://api.rawg.io/api/games?' + new URLSearchParams({
+        key: RAWG_API_KEY, search: term, page_size: '21'
+      });
+      const res = await fetch(url);
+      const data = await res.json();
+
+      if (data.error || data.detail) {
+        console.error(data);
+        imgSearchResults.innerHTML = `<div class="img-search-status">RAWG API error: ${escapeHtml(data.error || data.detail)}</div>`;
+        return;
+      }
+
+      const results = (data.results || []).filter(g => g.background_image);
+      if (results.length === 0) {
+        imgSearchResults.innerHTML = '<div class="img-search-status">No results in RAWG\'s database for that — try a different search, or paste a direct image URL above.</div>';
+        return;
+      }
+
+      imgSearchResults.innerHTML = results.map((g, i) =>
+        `<div class="img-result" data-i="${i}" title="${escapeHtml(g.name)}"><img src="${escapeHtml(g.background_image)}" loading="lazy"></div>`
+      ).join('');
+      imgSearchResults.querySelectorAll('.img-result').forEach(el => {
+        el.addEventListener('click', () => {
+          const g = results[Number(el.dataset.i)];
+          fImg.value = g.background_image;
+          updatePreview();
+          closeImgSearch();
+        });
+      });
+    } catch (err) {
+      console.error(err);
+      imgSearchResults.innerHTML = '<div class="img-search-status">Search failed — check your connection.</div>';
+    }
+  }
+  imgSearchBtn.addEventListener('click', runImageSearch);
+  imgSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runImageSearch(); }
+  });
+
+  // ── BULK ADD ─────────────────────────────────────────────────
+  function addBulkRow() {
+    const container = document.getElementById('bulkRows');
+    const row = document.createElement('div');
+    row.className = 'bulk-row';
+    row.innerHTML = `
+      <button type="button" class="bulk-remove-row" title="Remove this row">✕</button>
+      <div class="bulk-row-fields">
+        <input type="text" class="bulk-name" placeholder="Game name"/>
+        <input type="url" class="bulk-url" placeholder="Game URL"/>
+        <input type="url" class="bulk-img" placeholder="Image URL"/>
+        <div class="bulk-badges">
+          <label><input type="checkbox" class="bulk-new"/> New! ✨</label>
+          <label><input type="checkbox" class="bulk-pop"/> Hot! 🔥</label>
+          <label><input type="checkbox" class="bulk-fixed"/> Fixed 🔨</label>
+        </div>
+      </div>`;
+    row.querySelector('.bulk-remove-row').addEventListener('click', () => row.remove());
+    container.appendChild(row);
+  }
+  function resetBulkForm() {
+    document.getElementById('bulkRows').innerHTML = '';
+    for (let i = 0; i < 3; i++) addBulkRow();
+  }
+  document.getElementById('bulkAddRowBtn').addEventListener('click', addBulkRow);
+  resetBulkForm(); // seed 3 blank rows on page load
+
+  document.getElementById('bulkSubmitBtn').addEventListener('click', async () => {
+    const bulkSaveMsg = document.getElementById('bulkSaveMsg');
+    const rows = Array.from(document.querySelectorAll('#bulkRows .bulk-row'));
+    const newGamesInOrder = [];
+    const errors = [];
+
+    rows.forEach((row, idx) => {
+      const name = row.querySelector('.bulk-name').value.trim();
+      const url = row.querySelector('.bulk-url').value.trim();
+      const img = row.querySelector('.bulk-img').value.trim();
+      const isNew = row.querySelector('.bulk-new').checked;
+      const isPop = row.querySelector('.bulk-pop').checked;
+      const isFixed = row.querySelector('.bulk-fixed').checked;
+
+      if (!name && !url && !img) return; // fully blank row — skip silently
+      if (!name || !url || !img) {
+        errors.push(`Row ${idx + 1} needs a name, URL, and image (or leave all three blank to skip it).`);
+        return;
+      }
+      newGamesInOrder.push({ id: newGameId(), name, url, img, isNew, isPop, isFixed });
+    });
+
+    bulkSaveMsg.style.display = 'none';
+    if (errors.length > 0) {
+      bulkSaveMsg.textContent = errors.join(' ');
+      bulkSaveMsg.className = 'save-msg err';
+      bulkSaveMsg.style.display = 'block';
+      return;
+    }
+    if (newGamesInOrder.length === 0) {
+      bulkSaveMsg.textContent = 'Nothing to add — fill in at least one row.';
+      bulkSaveMsg.className = 'save-msg err';
+      bulkSaveMsg.style.display = 'block';
+      return;
+    }
+
+    document.getElementById('bulkSubmitBtn').disabled = true;
+    try {
+      const updatedList = insertNewGames(allGames, newGamesInOrder);
+      await saveGamesList(updatedList);
+      bulkSaveMsg.textContent = `Added ${newGamesInOrder.length} game${newGamesInOrder.length === 1 ? '' : 's'}.`;
+      bulkSaveMsg.className = 'save-msg ok';
+      bulkSaveMsg.style.display = 'block';
+      notifyGameChange(newGamesInOrder.map(g => `A game "${g.name}" has been added.`).join('\n'));
+      resetBulkForm();
+      renderList();
+    } catch (err) {
+      console.error(err);
+      bulkSaveMsg.textContent = 'Could not save — check your Firestore rules and connection.';
+      bulkSaveMsg.className = 'save-msg err';
+      bulkSaveMsg.style.display = 'block';
+    } finally {
+      document.getElementById('bulkSubmitBtn').disabled = false;
+    }
+  });
+
+  // ── SITE STATUS (Markdown banner shown on the games page) ──
+  const statusInput = document.getElementById('statusInput');
+  const statusPreview = document.getElementById('statusPreview');
+  const statusSaveBtn = document.getElementById('statusSaveBtn');
+  const statusSaveMsg = document.getElementById('statusSaveMsg');
+  const bellOnBtn = document.getElementById('bellOnBtn');
+  const bellOffBtn = document.getElementById('bellOffBtn');
+  let bellOn = true;
+
+  function setBellUI(isOn) {
+    bellOn = isOn;
+    bellOnBtn.classList.toggle('active', isOn);
+    bellOffBtn.classList.toggle('active', !isOn);
+    renderStatusPreview();
+  }
+  bellOnBtn.addEventListener('click', () => setBellUI(true));
+  bellOffBtn.addEventListener('click', () => setBellUI(false));
+
+  // Puts the chosen emoji at the start AND end — same spot the old
+  // hardcoded banner used it. Empty text stays empty either way (an
+  // empty status still falls back to the default banner on the page).
+  function wrapStatus(markdown, bell) {
+    const text = markdown.trim();
+    if (!text) return '';
+    const emoji = bell ? '🔔' : '🔕';
+    return `${emoji} ${text} ${emoji}`;
+  }
+
+  function renderStatusPreview() {
+    const text = statusInput.value.trim();
+    if (!text) {
+      statusPreview.textContent = 'Nothing set yet.';
+      statusPreview.style.color = '#999';
+      statusPreview.style.fontWeight = 'normal';
+      return;
+    }
+    statusPreview.style.color = '';
+    statusPreview.style.fontWeight = '';
+    const wrapped = wrapStatus(statusInput.value, bellOn);
+    statusPreview.innerHTML = window.marked ? window.marked.parse(wrapped) : escapeHtml(wrapped);
+  }
+  statusInput.addEventListener('input', renderStatusPreview);
+
+  async function loadStatus() {
+    try {
+      const snap = await getDoc(STATUS_REF);
+      const data = snap.exists() ? snap.data() : {};
+      statusInput.value = data.markdown || '';
+      setBellUI(data.bell !== false); // defaults to bell-on if never set
+    } catch (err) {
+      console.error(err);
+    }
+    renderStatusPreview();
+  }
+
+  statusSaveBtn.addEventListener('click', async () => {
+    statusSaveBtn.disabled = true;
+    try {
+      await setDoc(STATUS_REF, { markdown: statusInput.value, bell: bellOn });
+      statusSaveMsg.textContent = 'Status saved — live on the games page now.';
+      statusSaveMsg.className = 'save-msg ok';
+      statusSaveMsg.style.display = 'block';
+      notifyStatusChange(wrapStatus(statusInput.value, bellOn));
+    } catch (err) {
+      console.error(err);
+      statusSaveMsg.textContent = 'Could not save — check your Firestore rules and connection.';
+      statusSaveMsg.className = 'save-msg err';
+      statusSaveMsg.style.display = 'block';
+    } finally {
+      statusSaveBtn.disabled = false;
+    }
+  });
+
+  // ── GAME URL PREFIX ───────────────────────────────────────
+  // Every game URL looks like https://[prefix]/gamename. This swaps the
+  // [prefix] (the domain) on ALL games in one save and leaves everything
+  // after it — the game name part, plus any ?query or #hash — untouched.
+  const prefixInput = document.getElementById('prefixInput');
+  const prefixSummary = document.getElementById('prefixSummary');
+  const prefixApplyBtn = document.getElementById('prefixApplyBtn');
+  const prefixMsg = document.getElementById('prefixMsg');
+  const URL_HOST_RE = /^https?:\/\/[^\/?#]+/i;
+
+  // Turns what was typed into a clean host, or an error. Accepts a pasted
+  // "https://" and a trailing "/", but nothing else after the domain.
+  function parsePrefix(raw) {
+    const p = String(raw || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    if (!p) return {};
+    const bad = { error: 'Just the domain, like games.example.com — no spaces or slashes. The game name is added for you.' };
+    if (/[\s\/\\?#@]/.test(p)) return bad;
+    try {
+      const u = new URL('https://' + p);
+      if (u.pathname !== '/' || u.search || u.hash) return bad;
+      return { host: u.host };
+    } catch (e) {
+      return bad;
+    }
+  }
+
+  function hostOfUrl(url) {
+    const m = URL_HOST_RE.exec(String(url || '').trim());
+    return m ? m[0].replace(/^https?:\/\//i, '').toLowerCase() : null;
+  }
+
+  function rehostUrl(url, host) {
+    return String(url).trim().replace(URL_HOST_RE, 'https://' + host);
+  }
+
+  // Works out what applying `host` would do to `list`, without changing it.
+  function planPrefixChange(list, host) {
+    let changed = 0, skipped = 0, example = null;
+    const updated = list.map(g => {
+      if (!URL_HOST_RE.test(String(g.url || '').trim())) { skipped++; return g; }
+      const next = rehostUrl(g.url, host);
+      if (next === g.url) return g;
+      changed++;
+      if (!example) example = { name: g.name, url: next };
+      return { ...g, url: next };
+    });
+    return { updated, changed, skipped, example };
+  }
+
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  function updatePrefixPanel() {
+    const counts = {};
+    let noHost = 0;
+    allGames.forEach(g => {
+      const h = hostOfUrl(g.url);
+      if (h) counts[h] = (counts[h] || 0) + 1; else noHost++;
+    });
+    const hosts = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    prefixInput.placeholder = hosts.length ? hosts[0][0] : 'games.example.com';
+
+    const lines = [];   // [text, cssClass]
+    lines.push([hosts.length
+      ? 'Right now: ' + hosts.map(([h, n]) => `${h} (${plural(n, 'game')})`).join(', ')
+      : 'No games to update yet.', '']);
+
+    const parsed = parsePrefix(prefixInput.value);
+    let canApply = false;
+    if (parsed.error) {
+      lines.push([parsed.error, 'prefix-err']);
+    } else if (parsed.host && allGames.length) {
+      const plan = planPrefixChange(allGames, parsed.host);
+      if (plan.changed === 0) {
+        lines.push(['Every game already uses that prefix — nothing to change.', '']);
+      } else {
+        canApply = true;
+        lines.push([`${plural(plan.changed, 'game')} will change.`, '']);
+        lines.push([`Example: ${plan.example.name} → ${plan.example.url}`, 'prefix-ex']);
+      }
+    }
+    if (noHost) {
+      lines.push([`${plural(noHost, 'game')} ${noHost === 1 ? "has a URL that doesn't" : "have URLs that don't"} start with http:// or https:// and will be skipped.`, 'prefix-err']);
+    }
+
+    prefixSummary.innerHTML = '';
+    lines.forEach(([text, cls]) => {
+      const d = document.createElement('div');
+      if (cls) d.className = cls;
+      d.textContent = text;
+      prefixSummary.appendChild(d);
+    });
+    prefixApplyBtn.disabled = !canApply;
+  }
+
+  prefixInput.addEventListener('input', () => {
+    prefixMsg.style.display = 'none';
+    updatePrefixPanel();
+  });
+
+  prefixApplyBtn.addEventListener('click', async () => {
+    const parsed = parsePrefix(prefixInput.value);
+    if (!parsed.host) return;
+    const preview = planPrefixChange(allGames, parsed.host);
+    if (preview.changed === 0) return;
+    if (!confirm(`Change ${plural(preview.changed, 'game URL')} to https://${parsed.host}/…?\n\nThe game name part of each URL stays the same.`)) return;
+
+    prefixApplyBtn.disabled = true;
+    prefixMsg.style.display = 'none';
+    try {
+      // Re-read the list first so this whole-list save can't overwrite
+      // anything that changed since this page loaded.
+      const snap = await getDoc(DOC_REF);
+      const fresh = snap.exists() ? (snap.data().list || []) : [];
+      const plan = planPrefixChange(fresh, parsed.host);
+      await saveGamesList(plan.updated);
+      prefixMsg.textContent = `Done — ${plural(plan.changed, 'game')} now use https://${parsed.host}/…` +
+        (plan.skipped ? ` (${plural(plan.skipped, 'game')} skipped: URL doesn't start with http:// or https://)` : '');
+      prefixMsg.className = 'save-msg ok';
+      prefixMsg.style.display = 'block';
+      renderList();
+    } catch (err) {
+      console.error(err);
+      prefixMsg.textContent = 'Could not save — nothing was changed. Check your connection and Firestore rules.';
+      prefixMsg.className = 'save-msg err';
+      prefixMsg.style.display = 'block';
+      updatePrefixPanel();
+    }
+  });
+
+  // ── GAMES LIST ────────────────────────────────────────────
+  document.getElementById('listSearch').addEventListener('input', (e) => {
+    listFilter = e.target.value.toLowerCase();
+    renderList();
+  });
+
+  async function loadGamesList() {
+    const listEl = document.getElementById('gamesList');
+    try {
+      const snap = await getDoc(DOC_REF);
+      allGames = snap.exists() ? (snap.data().list || []) : [];
+    } catch (err) {
+      console.error(err);
+      listEl.innerHTML = '<div class="empty-note">Could not load games — check Firestore is set up and rules allow reads.</div>';
+      return;
+    }
+    renderList();
+  }
+
+  // Moves a game earlier/later, or straight to the top, WITHIN its own
+  // tier. Tier order itself (New > Fixed > Hot > everything else) is
+  // always fixed on the public page, so these only ever reorder games
+  // that share the same badge — buttons disable at tier boundaries.
+  async function moveGame(id, direction) {
+    const sorted = [...allGames].sort((a, b) => badgeTier(b) - badgeTier(a));
+    const i = sorted.findIndex(g => g.id === id);
+    if (i === -1) return;
+    const tier = badgeTier(sorted[i]);
+    const j = direction === 'up' ? i - 1 : i + 1;
+    if (j < 0 || j >= sorted.length || badgeTier(sorted[j]) !== tier) return;
+
+    const idxA = allGames.findIndex(g => g.id === sorted[i].id);
+    const idxB = allGames.findIndex(g => g.id === sorted[j].id);
+    const updated = [...allGames];
+    [updated[idxA], updated[idxB]] = [updated[idxB], updated[idxA]];
+
+    try {
+      await saveGamesList(updated);
+      renderList();
+    } catch (err) {
+      console.error(err);
+      alert('Could not reorder — check your Firestore rules and connection.');
+    }
+  }
+
+  async function moveGameToTop(id) {
+    const game = allGames.find(g => g.id === id);
+    if (!game) return;
+    const tier = badgeTier(game);
+    const withoutGame = allGames.filter(g => g.id !== id);
+    const firstSameTierIdx = withoutGame.findIndex(g => badgeTier(g) === tier);
+    const updated = [...withoutGame];
+    if (firstSameTierIdx === -1) {
+      updated.push(game);
+    } else {
+      updated.splice(firstSameTierIdx, 0, game);
+    }
+    try {
+      await saveGamesList(updated);
+      renderList();
+    } catch (err) {
+      console.error(err);
+      alert('Could not reorder — check your Firestore rules and connection.');
+    }
+  }
+
+  function renderList() {
+    const listEl = document.getElementById('gamesList');
+    const sorted = [...allGames].sort((a, b) => badgeTier(b) - badgeTier(a));
+    const canReorder = !listFilter; // reordering against a filtered subset would be ambiguous
+    const filtered = listFilter
+      ? sorted.filter(g => (g.name || '').toLowerCase().includes(listFilter))
+      : sorted;
+    document.getElementById('listCount').textContent = `${filtered.length} game${filtered.length === 1 ? '' : 's'}`;
+    updatePrefixPanel();
+
+    if (filtered.length === 0) {
+      listEl.innerHTML = '<div class="empty-note">No games yet — add one above.</div>';
+      return;
+    }
+
+    let lastTier = null;
+    listEl.innerHTML = filtered.map(g => {
+      const tier = badgeTier(g);
+      const i = sorted.findIndex(x => x.id === g.id);
+      const canUp = canReorder && i > 0 && badgeTier(sorted[i - 1]) === tier;
+      const canDown = canReorder && i < sorted.length - 1 && badgeTier(sorted[i + 1]) === tier;
+
+      let header = '';
+      if (tier !== lastTier) {
+        header = `<div class="tier-header">${TIER_LABEL[tier]}</div>`;
+        lastTier = tier;
+      }
+
+      const badges = [
+        g.isNew ? '<span class="mini-badge new">NEW</span>' : '',
+        g.isPop ? '<span class="mini-badge hot">HOT</span>' : '',
+        g.isFixed ? '<span class="mini-badge fixed">FIXED</span>' : '',
+      ].join('');
+      return `
+      ${header}
+      <div class="game-row">
+        <div class="reorder-col">
+          <button class="btn-reorder top-btn" data-id="${g.id}" data-action="top" ${canUp ? '' : 'disabled'} title="Jump to top of this section">⤒</button>
+          <button class="btn-reorder" data-id="${g.id}" data-action="up" ${canUp ? '' : 'disabled'} title="Move up">▲</button>
+          <button class="btn-reorder" data-id="${g.id}" data-action="down" ${canDown ? '' : 'disabled'} title="Move down">▼</button>
+        </div>
+        <div class="row-thumb"><img src="${escapeHtml(g.img)}" loading="lazy"></div>
+        <div class="row-info"><div class="row-name">${escapeHtml(g.name)}</div></div>
+        <div class="row-badges">${badges}</div>
+        <div class="row-actions">
+          <button class="btn-edit" data-id="${g.id}">Edit</button>
+          <button class="btn-delete" data-id="${g.id}">Delete</button>
+        </div>
+      </div>`;
+    }).join('');
+
+    if (listFilter) {
+      listEl.insertAdjacentHTML('afterbegin', '<div class="reorder-note">Clear the search box to reorder games — reordering while filtered is disabled since it\'d be ambiguous.</div>');
+    }
+
+    listEl.querySelectorAll('.btn-reorder').forEach(btn =>
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        if (action === 'top') moveGameToTop(btn.dataset.id);
+        else moveGame(btn.dataset.id, action);
+      })
+    );
+    listEl.querySelectorAll('.btn-edit').forEach(btn =>
+      btn.addEventListener('click', () => startEdit(btn.dataset.id))
+    );
+    listEl.querySelectorAll('.btn-delete').forEach(btn =>
+      btn.addEventListener('click', () => deleteGame(btn.dataset.id))
+    );
+  }
+
+  function startEdit(id) {
+    const g = allGames.find(x => x.id === id);
+    if (!g) return;
+    activateTab('games');
+    activateAddMode('one');
+    editingId = g.id;
+    fName.value = g.name || '';
+    fUrl.value = g.url || '';
+    fImg.value = g.img || '';
+    fNew.checked = !!g.isNew;
+    fPop.checked = !!g.isPop;
+    fFixed.checked = !!g.isFixed;
+    formTitle.textContent = `Editing "${g.name}"`;
+    saveBtn.textContent = 'Update Game';
+    cancelBtn.style.display = 'inline-block';
+    saveMsg.style.display = 'none';
+    updatePreview();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function deleteGame(id) {
+    const g = allGames.find(x => x.id === id);
+    if (!g) return;
+    if (!confirm(`Delete "${g.name}"? This can't be undone.`)) return;
+    try {
+      const updatedList = allGames.filter(x => x.id !== id);
+      await saveGamesList(updatedList);
+      if (editingId === id) resetForm();
+      renderList();
+      notifyGameChange(`A game "${g.name}" has been removed.`);
+    } catch (err) {
+      console.error(err);
+      alert('Could not delete — check your Firestore rules and connection.');
+    }
+  }
+
+  // ── WORLD RECORDS ─────────────────────────────────────────
+  // site/wr has three independent fields (intro, records, cheaters)
+  // edited from three separate panels — every save here uses
+  // {merge:true} so saving one doesn't wipe out the other two.
+  //
+  // Records used to be one freeform string per entry (e.g. "Jane Doe -
+  // 500 in Flappy Bird (UNBEATABLE)"), typed by hand. They're now
+  // structured — {name, record, unbeatable} — but normalizeRecord()
+  // still understands the old string format too, so anything already
+  // in Firestore from before this change keeps working; it just gets
+  // saved back in the new structured shape the next time it's touched.
+  const wrIntroInput = document.getElementById('wrIntroInput');
+  const wrIntroPreview = document.getElementById('wrIntroPreview');
+  const wrCheatersInput = document.getElementById('wrCheatersInput');
+  let wrRecords = [];
+
+  function normalizeRecord(entry) {
+    if (entry && typeof entry === 'object') {
+      return { name: entry.name || '', record: entry.record || '', unbeatable: !!entry.unbeatable };
+    }
+    // Old plain-string format: "Name - record text (UNBEATABLE)"
+    let text = String(entry ?? '');
+    let unbeatable = false;
+    const m = text.match(/\s*\(UNBEATABLE\)\s*$/i);
+    if (m) {
+      unbeatable = true;
+      text = text.slice(0, m.index);
+    }
+    const dashIdx = text.indexOf(' - ');
+    if (dashIdx === -1) return { name: text.trim(), record: '', unbeatable };
+    return { name: text.slice(0, dashIdx).trim(), record: text.slice(dashIdx + 3).trim(), unbeatable };
+  }
+
+  function formatRecordLine(r) {
+    const base = r.record ? `${r.name} - ${r.record}` : r.name;
+    return r.unbeatable ? `${base} (UNBEATABLE)` : base;
+  }
+
+  function renderWrIntroPreview() {
+    const text = wrIntroInput.value.trim();
+    if (!text) {
+      wrIntroPreview.textContent = 'Nothing set yet.';
+      wrIntroPreview.style.color = '#999';
+      wrIntroPreview.style.fontWeight = 'normal';
+      return;
+    }
+    wrIntroPreview.style.color = '';
+    wrIntroPreview.style.fontWeight = '';
+    wrIntroPreview.innerHTML = window.marked ? window.marked.parse(wrIntroInput.value) : escapeHtml(wrIntroInput.value);
+  }
+  wrIntroInput.addEventListener('input', renderWrIntroPreview);
+
+  async function loadWrData() {
+    try {
+      const snap = await getDoc(WR_REF);
+      const data = snap.exists() ? snap.data() : {};
+      wrIntroInput.value = data.intro || '';
+      wrRecords = (data.records || []).map(normalizeRecord);
+      wrCheatersInput.value = data.cheaters || '';
+    } catch (err) {
+      console.error(err);
+    }
+    renderWrIntroPreview();
+    renderWrRecords();
+  }
+
+  document.getElementById('wrIntroSaveBtn').addEventListener('click', async () => {
+    const msg = document.getElementById('wrIntroSaveMsg');
+    try {
+      await setDoc(WR_REF, { intro: wrIntroInput.value }, { merge: true });
+      msg.textContent = 'Instructions saved.';
+      msg.className = 'save-msg ok';
+      msg.style.display = 'block';
+    } catch (err) {
+      console.error(err);
+      msg.textContent = 'Could not save — check your Firestore rules and connection.';
+      msg.className = 'save-msg err';
+      msg.style.display = 'block';
+    }
+  });
+
+  document.getElementById('wrCheatersSaveBtn').addEventListener('click', async () => {
+    const msg = document.getElementById('wrCheatersSaveMsg');
+    try {
+      await setDoc(WR_REF, { cheaters: wrCheatersInput.value.trim() }, { merge: true });
+      msg.textContent = 'Cheaters list saved.';
+      msg.className = 'save-msg ok';
+      msg.style.display = 'block';
+    } catch (err) {
+      console.error(err);
+      msg.textContent = 'Could not save — check your Firestore rules and connection.';
+      msg.className = 'save-msg err';
+      msg.style.display = 'block';
+    }
+  });
+
+  async function saveWrRecords() {
+    await setDoc(WR_REF, { records: wrRecords }, { merge: true });
+  }
+
+  async function moveWrRecord(i, direction) {
+    const j = direction === 'up' ? i - 1 : i + 1;
+    if (j < 0 || j >= wrRecords.length) return;
+    [wrRecords[i], wrRecords[j]] = [wrRecords[j], wrRecords[i]];
+    try {
+      await saveWrRecords();
+      renderWrRecords();
+    } catch (err) {
+      console.error(err);
+      alert('Could not reorder — check your Firestore rules and connection.');
+    }
+  }
+
+  async function moveWrRecordToTop(i) {
+    if (i <= 0) return;
+    const [item] = wrRecords.splice(i, 1);
+    wrRecords.unshift(item);
+    try {
+      await saveWrRecords();
+      renderWrRecords();
+    } catch (err) {
+      console.error(err);
+      alert('Could not reorder — check your Firestore rules and connection.');
+    }
+  }
+
+  function renderWrRecords() {
+    const listEl = document.getElementById('wrRecordsList');
+    if (wrRecords.length === 0) {
+      listEl.innerHTML = '<div class="empty-note">No records yet — add one above.</div>';
+      return;
+    }
+    listEl.innerHTML = wrRecords.map((r, i) => {
+      const canUp = i > 0;
+      const canDown = i < wrRecords.length - 1;
+      return `
+      <div class="wr-record-row" data-i="${i}">
+        <div class="reorder-col">
+          <button class="btn-reorder top-btn" data-i="${i}" data-action="top" ${canUp ? '' : 'disabled'} title="Jump to top">⤒</button>
+          <button class="btn-reorder" data-i="${i}" data-action="up" ${canUp ? '' : 'disabled'} title="Move up">▲</button>
+          <button class="btn-reorder" data-i="${i}" data-action="down" ${canDown ? '' : 'disabled'} title="Move down">▼</button>
+        </div>
+        <div class="wr-record-fields">
+          <input type="text" class="wr-name-input" value="${escapeHtml(r.name)}" placeholder="Name"/>
+          <input type="text" class="wr-record-input" value="${escapeHtml(r.record)}" placeholder="Record"/>
+          <label class="unbeatable-check"><input type="checkbox" class="wr-unbeatable-input" ${r.unbeatable ? 'checked' : ''}/> Unbeatable</label>
+        </div>
+        <button type="button" class="row-actions btn-delete wr-record-delete" data-i="${i}">Delete</button>
+      </div>`;
+    }).join('');
+
+    listEl.querySelectorAll('.wr-record-row').forEach(row => {
+      const i = Number(row.dataset.i);
+      const nameInput = row.querySelector('.wr-name-input');
+      const recordInput = row.querySelector('.wr-record-input');
+      const unbeatableInput = row.querySelector('.wr-unbeatable-input');
+      async function saveRow() {
+        wrRecords[i] = {
+          name: nameInput.value.trim(),
+          record: recordInput.value.trim(),
+          unbeatable: unbeatableInput.checked,
+        };
+        try {
+          await saveWrRecords();
+        } catch (err) {
+          console.error(err);
+          alert('Could not save — check your Firestore rules and connection.');
+        }
+      }
+      nameInput.addEventListener('change', saveRow);
+      recordInput.addEventListener('change', saveRow);
+      unbeatableInput.addEventListener('change', saveRow);
+    });
+
+    listEl.querySelectorAll('.btn-reorder').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const i = Number(btn.dataset.i);
+        const action = btn.dataset.action;
+        if (action === 'top') moveWrRecordToTop(i);
+        else moveWrRecord(i, action);
+      });
+    });
+    listEl.querySelectorAll('.wr-record-delete').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const i = Number(btn.dataset.i);
+        if (!confirm('Delete this record?')) return;
+        wrRecords.splice(i, 1);
+        try {
+          await saveWrRecords();
+          renderWrRecords();
+        } catch (err) {
+          console.error(err);
+          alert('Could not delete — check your Firestore rules and connection.');
+        }
+      });
+    });
+  }
+
+  async function addWrRecord() {
+    const nameInput = document.getElementById('wrNewName');
+    const recordInput = document.getElementById('wrNewRecord');
+    const unbeatableInput = document.getElementById('wrNewUnbeatable');
+    const name = nameInput.value.trim();
+    const record = recordInput.value.trim();
+    if (!name || !record) return;
+    wrRecords.push({ name, record, unbeatable: unbeatableInput.checked });
+    nameInput.value = '';
+    recordInput.value = '';
+    unbeatableInput.checked = false;
+    try {
+      await saveWrRecords();
+      renderWrRecords();
+    } catch (err) {
+      console.error(err);
+      alert('Could not save — check your Firestore rules and connection.');
+    }
+  }
+  document.getElementById('wrAddRecordBtn').addEventListener('click', addWrRecord);
+  [document.getElementById('wrNewName'), document.getElementById('wrNewRecord')].forEach(el => {
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addWrRecord(); }
+    });
+  });
+
+  updatePreview();
+
+  // ── STATUS PAGE TAB ─────────────────────────────────────────
+  // Mirrors sfc-status.html's own COMPONENT_DEFS exactly — if you add
+  // a component here, add the matching entry there too (and vice
+  // versa) or the two pages will disagree about what exists.
+  const COMPONENT_DEFS = [
+    { key: 'gameLibrary',          name: 'Game Library & CDN',    automated: true },
+    { key: 'discordNotifications', name: 'Discord Notifications', automated: true },
+    { key: 'siteSearch',           name: 'Site Search',           automated: false },
+    { key: 'randomGame',           name: 'Random Game Button',    automated: false },
+  ];
+
+  let statusChecks = {};   // read-only, from sfc-worker.js's scheduled job
+  let statusOverrides = {}; // { [componentKey]: { status, until, note } }
+  let statusIncidents = []; // [{ title, date, detail }]
+  let editingIncidentIndex = null;
+
+  async function loadStatusPage() {
+    try {
+      const [checksSnap, pageSnap] = await Promise.all([
+        getDoc(STATUS_CHECKS_REF),
+        getDoc(STATUS_PAGE_REF),
+      ]);
+      statusChecks = checksSnap.exists() ? checksSnap.data() : {};
+      const pageData = pageSnap.exists() ? pageSnap.data() : {};
+      statusOverrides = pageData.overrides || {};
+      statusIncidents = pageData.incidents || [];
+    } catch (err) {
+      console.error(err);
+      document.getElementById('autoChecksList').innerHTML = '<div class="empty-note">Could not load — check Firestore rules and connection.</div>';
+      return;
+    }
+    renderAutoChecks();
+    renderOverrides();
+    renderIncidents();
+  }
+
+  function renderAutoChecks() {
+    const el = document.getElementById('autoChecksList');
+    const automated = COMPONENT_DEFS.filter(d => d.automated);
+    el.innerHTML = automated.map(def => {
+      const check = statusChecks[def.key];
+      const status = check ? check.current : 'unknown';
+      const badgeClass = status === 'operational' ? 'new' : status === 'outage' ? 'hot' : 'fixed';
+      const when = check && check.lastChecked
+        ? new Date(check.lastChecked).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+        : 'never';
+      const detail = check && check.detail ? escapeHtml(check.detail) : '';
+      return `
+        <div class="game-row">
+          <div class="row-info">
+            <div class="row-name">${escapeHtml(def.name)}</div>
+            <div style="font-size:12px; color:#999;">Last checked: ${when}${detail ? ' — ' + detail : ''}</div>
+          </div>
+          <span class="mini-badge ${badgeClass}">${status.toUpperCase()}</span>
+        </div>`;
+    }).join('');
+  }
+
+  // Directly corrects one day's recorded history for one automated
+  // component. Always reads the full current document first and writes
+  // back a complete, correct component object (current/detail/
+  // lastChecked/history all populated) — that way it's impossible for
+  // this to accidentally wipe the OTHER automated component's data or
+  // any field this code isn't explicitly touching.
+  async function backdateHistory(componentKey, dateStr, status) {
+    const snap = await getDoc(STATUS_CHECKS_REF);
+    const data = snap.exists() ? snap.data() : {};
+    const component = data[componentKey] || { current: 'operational', detail: '', lastChecked: null, history: [] };
+    const history = Array.isArray(component.history) ? [...component.history] : [];
+    const idx = history.findIndex(h => h.date === dateStr);
+    if (idx === -1) {
+      history.push({ date: dateStr, status });
+      history.sort((a, b) => a.date.localeCompare(b.date));
+    } else {
+      history[idx] = { date: dateStr, status };
+    }
+    const updatedComponent = { ...component, history };
+    await setDoc(STATUS_CHECKS_REF, { [componentKey]: updatedComponent }, { merge: true });
+    statusChecks[componentKey] = updatedComponent;
+  }
+
+  document.getElementById('backdateSaveBtn').addEventListener('click', async () => {
+    const componentKey = document.getElementById('backdateComponent').value;
+    const dateStr = document.getElementById('backdateDate').value;
+    const status = document.getElementById('backdateStatus').value;
+    const msg = document.getElementById('backdateSaveMsg');
+
+    if (!dateStr) {
+      msg.textContent = 'Pick a date first.';
+      msg.className = 'save-msg err';
+      msg.style.display = 'block';
+      return;
+    }
+
+    try {
+      await backdateHistory(componentKey, dateStr, status);
+      msg.textContent = `Corrected ${dateStr} to "${status}" — check the public status page to confirm.`;
+      msg.className = 'save-msg ok';
+      msg.style.display = 'block';
+      renderAutoChecks();
+    } catch (err) {
+      console.error(err);
+      msg.textContent = 'Could not save — check your Firestore rules and connection.';
+      msg.className = 'save-msg err';
+      msg.style.display = 'block';
+    }
+  });
+
+  async function saveStatusOverrides() {
+    await setDoc(STATUS_PAGE_REF, { overrides: statusOverrides }, { merge: true });
+  }
+
+  function renderOverrides() {
+    const el = document.getElementById('overridesList');
+    el.innerHTML = COMPONENT_DEFS.map(def => {
+      const ov = statusOverrides[def.key] || {};
+      const status = ov.status || '';
+      const until = ov.until ? toLocalDatetimeInputValue(ov.until) : '';
+      const note = ov.note || '';
+      return `
+        <div class="wr-record-row" data-key="${def.key}">
+          <div class="wr-record-fields" style="grid-template-columns: 1fr 1fr 1fr 1fr;">
+            <div style="font-weight:bold; font-size:14px;">${escapeHtml(def.name)}</div>
+            <select class="ov-status">
+              <option value="" ${status === '' ? 'selected' : ''}>No override</option>
+              <option value="operational" ${status === 'operational' ? 'selected' : ''}>Operational</option>
+              <option value="maintenance" ${status === 'maintenance' ? 'selected' : ''}>Under Maintenance</option>
+              <option value="outage" ${status === 'outage' ? 'selected' : ''}>Down</option>
+            </select>
+            <input type="datetime-local" class="ov-until" value="${until}" title="Auto-clears after this time — leave blank to stay on until you clear it"/>
+            <input type="text" class="ov-note" value="${escapeHtml(note)}" placeholder="Note shown in Active Incident"/>
+          </div>
+        </div>`;
+    }).join('');
+
+    el.querySelectorAll('.wr-record-row').forEach(row => {
+      const key = row.dataset.key;
+      const statusSel = row.querySelector('.ov-status');
+      const untilInput = row.querySelector('.ov-until');
+      const noteInput = row.querySelector('.ov-note');
+      async function save() {
+        const status = statusSel.value;
+        if (!status) {
+          delete statusOverrides[key];
+        } else {
+          statusOverrides[key] = {
+            status,
+            until: untilInput.value ? new Date(untilInput.value).getTime() : null,
+            note: noteInput.value.trim(),
+          };
+        }
+        try {
+          await saveStatusOverrides();
+        } catch (err) {
+          console.error(err);
+          alert('Could not save — check your Firestore rules and connection.');
+        }
+      }
+      statusSel.addEventListener('change', save);
+      untilInput.addEventListener('change', save);
+      noteInput.addEventListener('change', save);
+    });
+  }
+
+  function toLocalDatetimeInputValue(epochMs) {
+    const d = new Date(epochMs);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  async function saveStatusIncidents() {
+    await setDoc(STATUS_PAGE_REF, { incidents: statusIncidents }, { merge: true });
+  }
+
+  function renderIncidents() {
+    const el = document.getElementById('incidentsList');
+    if (statusIncidents.length === 0) {
+      el.innerHTML = '<div class="empty-note">No past incidents yet.</div>';
+      return;
+    }
+    const sorted = statusIncidents.map((inc, i) => ({ inc, i })).sort((a, b) => (b.inc.date || '').localeCompare(a.inc.date || ''));
+    el.innerHTML = sorted.map(({ inc, i }) => `
+      <div class="game-row">
+        <div class="row-info">
+          <div class="row-name">${escapeHtml(inc.title)}</div>
+          <div style="font-size:12px; color:#999;">${escapeHtml(inc.date || '')} — ${escapeHtml(inc.detail || '').slice(0, 80)}${(inc.detail || '').length > 80 ? '…' : ''}</div>
+        </div>
+        <div class="row-actions">
+          <button class="btn-edit" data-i="${i}">Edit</button>
+          <button class="btn-delete" data-i="${i}">Delete</button>
+        </div>
+      </div>`).join('');
+
+    el.querySelectorAll('.btn-edit').forEach(btn =>
+      btn.addEventListener('click', () => startEditIncident(Number(btn.dataset.i)))
+    );
+    el.querySelectorAll('.btn-delete').forEach(btn =>
+      btn.addEventListener('click', async () => {
+        const i = Number(btn.dataset.i);
+        if (!confirm(`Delete "${statusIncidents[i].title}"? This can't be undone.`)) return;
+        statusIncidents.splice(i, 1);
+        try {
+          await saveStatusIncidents();
+          if (editingIncidentIndex === i) resetIncidentForm();
+          renderIncidents();
+        } catch (err) {
+          console.error(err);
+          alert('Could not delete — check your Firestore rules and connection.');
+        }
+      })
+    );
+  }
+
+  const incidentTitle = document.getElementById('incidentTitle');
+  const incidentDate = document.getElementById('incidentDate');
+  const incidentDetail = document.getElementById('incidentDetail');
+  const incidentAddBtn = document.getElementById('incidentAddBtn');
+  const incidentCancelBtn = document.getElementById('incidentCancelBtn');
+  const incidentSaveMsg = document.getElementById('incidentSaveMsg');
+
+  function resetIncidentForm() {
+    editingIncidentIndex = null;
+    incidentTitle.value = '';
+    incidentDate.value = '';
+    incidentDetail.value = '';
+    incidentAddBtn.textContent = 'Add Incident';
+    incidentCancelBtn.style.display = 'none';
+    incidentSaveMsg.style.display = 'none';
+  }
+  incidentCancelBtn.addEventListener('click', resetIncidentForm);
+
+  function startEditIncident(i) {
+    const inc = statusIncidents[i];
+    if (!inc) return;
+    editingIncidentIndex = i;
+    incidentTitle.value = inc.title || '';
+    incidentDate.value = inc.date || '';
+    incidentDetail.value = inc.detail || '';
+    incidentAddBtn.textContent = 'Update Incident';
+    incidentCancelBtn.style.display = 'inline-block';
+    incidentSaveMsg.style.display = 'none';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  incidentAddBtn.addEventListener('click', async () => {
+    const title = incidentTitle.value.trim();
+    const date = incidentDate.value.trim();
+    const detail = incidentDetail.value.trim();
+    if (!title || !date) {
+      incidentSaveMsg.textContent = 'Title and Date are required (format: YYYY-MM-DD).';
+      incidentSaveMsg.className = 'save-msg err';
+      incidentSaveMsg.style.display = 'block';
+      return;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      incidentSaveMsg.textContent = 'Date must be in YYYY-MM-DD format.';
+      incidentSaveMsg.className = 'save-msg err';
+      incidentSaveMsg.style.display = 'block';
+      return;
+    }
+
+    const entry = { title, date, detail };
+    if (editingIncidentIndex !== null) {
+      statusIncidents[editingIncidentIndex] = entry;
+    } else {
+      statusIncidents.push(entry);
+    }
+
+    try {
+      await saveStatusIncidents();
+      incidentSaveMsg.textContent = editingIncidentIndex !== null ? 'Incident updated.' : 'Incident added.';
+      incidentSaveMsg.className = 'save-msg ok';
+      incidentSaveMsg.style.display = 'block';
+      resetIncidentForm();
+      renderIncidents();
+    } catch (err) {
+      console.error(err);
+      incidentSaveMsg.textContent = 'Could not save — check your Firestore rules and connection.';
+      incidentSaveMsg.className = 'save-msg err';
+      incidentSaveMsg.style.display = 'block';
+    }
+  });
+</script>
+</body>
+</html>
 
   Admin panel for SchoolFlashCards5. Not linked from the public site
   on purpose — bookmark this page's URL.
